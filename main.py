@@ -18,6 +18,7 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
+import re
 
 # ---------------- CONFIG ----------------
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")           # NewsAPI.org key
@@ -40,6 +41,14 @@ WORKDIR.mkdir(exist_ok=True)
 
 def log(*args):
     print("[BOT]", *args)
+
+def sanitize_title(title: str) -> str:
+    # Remove emojis and non-ASCII characters
+    title = re.sub(r"[^\x00-\x7F]+", "", title)
+    # Replace multiple spaces with single space
+    title = re.sub(r"\s+", " ", title).strip()
+    # Truncate to 100 characters for YouTube
+    return title[:100]
 
 def get_trending_topic():
     log("Fetching trending entertainment topic...")
@@ -244,14 +253,14 @@ def get_youtube_service():
         token_uri="https://oauth2.googleapis.com/token",
         scopes=["https://www.googleapis.com/auth/youtube.upload", "https://www.googleapis.com/auth/youtube"]
     )
-    req = Request()
-    creds.refresh(req)
+    creds.refresh(Request())
     log("Refreshed YouTube access token.")
     youtube = build("youtube", "v3", credentials=creds, cache_discovery=False)
     return youtube
 
 def upload_video_to_youtube(video_file, title, description, tags):
     yt = get_youtube_service()
+    title = sanitize_title(title)
     body = {
         "snippet": {
             "title": title,
