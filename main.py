@@ -6,13 +6,11 @@ import random
 import requests
 from pathlib import Path
 from gtts import gTTS
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, UnidentifiedImageError
 from moviepy.editor import (
     ImageClip, AudioFileClip, concatenate_videoclips,
-    CompositeVideoClip, CompositeAudioClip, afx
+    CompositeVideoClip, CompositeAudioClip, afx, vfx
 )
-
-# YouTube upload libs
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from google.oauth2.credentials import Credentials
@@ -23,16 +21,13 @@ NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 YT_CLIENT_ID = os.getenv("YT_CLIENT_ID")
 YT_CLIENT_SECRET = os.getenv("YT_CLIENT_SECRET")
 YT_REFRESH_TOKEN = os.getenv("YT_REFRESH_TOKEN")
-MUSIC_URL = os.getenv("MUSIC_URL")   # direct mp3 link (optional)
+MUSIC_URL = os.getenv("MUSIC_URL")   # optional direct mp3 URL
 NUM_IMAGES = int(os.getenv("NUM_IMAGES") or "5")
 IMAGE_FETCH_TRIES = 6
 
 VIDEO_W, VIDEO_H = 1080, 1920
-# PER_IMAGE_DURATION will be computed from TTS duration to keep voice in sync
-TEXT_AREA_W = int(VIDEO_W * 0.92)
 TEXT_AREA_H = int(VIDEO_H * 0.28)
-FONT_PATH = None  # optional: add a .ttf to repo and set this to its path
-
+FONT_PATH = None  # optionally add a TTF font to repo and set path
 WORKDIR = Path("work")
 WORKDIR.mkdir(exist_ok=True)
 
@@ -41,16 +36,28 @@ def log(*args):
 
 # ---------- Utilities ----------
 def sanitize_title(title: str) -> str:
-    # Remove emojis & non-ascii, collapse whitespace, truncate to 100 chars
-    t = re.sub(r"[^\x00-\x7F]+", "", title)
+    t = re.sub(r"[^\x00-\x7F]+", "", title)   # drop non-ascii/emojis
     t = re.sub(r"\s+", " ", t).strip()
     return t[:100]
 
 def clean_query(q: str) -> str:
-    # remove punctuation and limit length for safe image queries
     q = re.sub(r"[^\w\s]", " ", q)
     q = re.sub(r"\s+", " ", q).strip()
-    return q[:80]  # limit query length
+    return q[:80]
+
+def extract_keywords(topic: str, max_words=6):
+    # pick capitalized tokens (names) and first few words as fallback
+    tokens = re.findall(r"[A-Z][a-z]{2,}", topic)
+    if tokens:
+        # add joined multi-word combos too
+        kws = tokens[:max_words]
+    else:
+        kws = topic.split()[:max_words]
+    # also include first 3 words as a backup query
+    first_words = " ".join(topic.split()[:3])
+    kws.append(first_words)
+    # ensure unique & cleaned
+    return list(dict.fromkeys([clean_query(k) for k in kws if k]))
 
 # ---------- 1) Trending topic ----------
 def get_trending_topic():
@@ -65,7 +72,7 @@ def get_trending_topic():
     log("Topic:", title)
     return title
 
-# ---------- 2) Simple gossip lines ----------
+# ---------- 2) Lines ----------
 def create_gossip_lines(topic):
     lines = [
         "Rumors are spreading fast...",
@@ -76,73 +83,107 @@ def create_gossip_lines(topic):
     ]
     return lines
 
-# ---------- 3) Images ----------
+# ---------- 3) Image download & validation ----------
+def is_valid_image_bytes(bts: bytes) -> bool:
+    try:
+        im = Image.open(Path(io_bytes := Path(WORKDIR / "tmp_check.jpg")))
+        # not used; we instead use PIL open directly from bytes below
+    except Exception:
+        pass
+    # We'll validate using PIL directly in memory
+    from io import BytesIO
+    try:
+        img = Image.open(BytesIO(bts))
+        img.verify()  # will raise if invalid
+        return True
+    except Exception:
+        return False
+
+def try_download_image(url: str, save_path: Path) -> bool:
+    try:
+        r = requests.get(url, timeout=20)
+        if r.status_code != 200:
+            return False
+        content = r.content
+        # validate content is an image
+        from io import BytesIO
+        try:
+            img = Image.open(BytesIO(content))
+            img.verify()
+        except UnidentifiedImageError:
+            return False
+        except Exception:
+            return False
+        # save
+        with open(save_path, "wb") as f:
+            f.write(content)
+        return True
+    except Exception as e:
+        return False
+
 def download_images(topic, n=NUM_IMAGES):
     log("Downloading images for topic:", topic)
     images = []
-    q = clean_query(topic)
+    keywords = extract_keywords(topic)
+    log("Image keywords:", keywords)
+    # For each image required, try keywords in rotation to get variety
     for i in range(n):
-        tries = 0
-        success = False
-        while tries < IMAGE_FETCH_TRIES and not success:
-            try:
-                # Unsplash Source endpoint: returns random image for query
-                url = f"https://source.unsplash.com/{VIDEO_W}x{VIDEO_H}/?{q}&sig={random.randint(1,999999)}"
-                resp = requests.get(url, timeout=20)
-                resp.raise_for_status()
-                path = WORKDIR / f"img_{i}.jpg"
-                with open(path, "wb") as f:
-                    f.write(resp.content)
-                images.append(str(path))
-                success = True
-                log(f"Saved image {i}")
-            except Exception as e:
-                tries += 1
-                log("Image fetch failed, retry", tries, "err:", e)
-                time.sleep(1)
-        if not success:
-            log("Failed to fetch image, using placeholder color")
+        saved = False
+        random.shuffle(keywords)
+        for kw in keywords:
+            tries = 0
+            while tries < IMAGE_FETCH_TRIES and not saved:
+                try:
+                    url = f"https://source.unsplash.com/{VIDEO_W}x{VIDEO_H}/?{kw}&sig={random.randint(1,999999)}"
+                    path = WORKDIR / f"img_{i}.jpg"
+                    ok = try_download_image(url, path)
+                    if ok:
+                        log(f"Image saved for keyword '{kw}' -> {path}")
+                        images.append(str(path))
+                        saved = True
+                        break
+                    else:
+                        tries += 1
+                        log("Image not valid or failed, try:", tries, "keyword:", kw)
+                        time.sleep(0.5)
+                except Exception as e:
+                    tries += 1
+                    log("Image download error:", e)
+                    time.sleep(0.5)
+            if saved:
+                break
+        # fallback to placeholder if none saved
+        if not saved:
+            log("Using fallback placeholder image for slot", i)
             img = Image.new("RGB", (VIDEO_W, VIDEO_H), (18, 18, 18))
             p = WORKDIR / f"img_fallback_{i}.jpg"
             img.save(p, "JPEG")
             images.append(str(p))
-    log("Downloaded images:", images)
+    log("Final images used:", images)
     return images
 
-# ---------- 4) TTS ----------
-def create_tts_audio(lines, filename="tts.mp3", lang="en"):
-    combined = " ".join(lines)
-    log("Generating TTS audio...")
-    tts = gTTS(text=combined, lang=lang, slow=False)
-    outpath = WORKDIR / filename
-    tts.save(str(outpath))
-    log("Saved TTS to", outpath)
-    # return path and duration
-    audio_clip = AudioFileClip(str(outpath))
-    dur = audio_clip.duration
-    audio_clip.close()
-    log("TTS duration (s):", dur)
-    return str(outpath), dur
+# ---------- 4) Per-line TTS ----------
+def create_tts_per_line(lines, lang="en"):
+    tts_paths = []
+    durations = []
+    for idx, line in enumerate(lines):
+        safe = re.sub(r"\s+", " ", line).strip()
+        fname = WORKDIR / f"tts_line_{idx}.mp3"
+        log("Creating TTS for line", idx, "text:", safe)
+        tts = gTTS(text=safe, lang=lang, slow=False)
+        tts.save(str(fname))
+        # measure duration
+        a = AudioFileClip(str(fname))
+        dur = a.duration
+        a.close()
+        log("TTS saved:", fname, "duration:", dur)
+        tts_paths.append(str(fname))
+        durations.append(float(dur))
+    return tts_paths, durations
 
-# ---------- 5) Music ----------
-def download_music(url, filename="music.mp3"):
-    if not url:
-        log("No MUSIC_URL provided; skipping background music.")
-        return None
-    log("Downloading background music:", url)
-    r = requests.get(url, stream=True, timeout=30)
-    r.raise_for_status()
-    path = WORKDIR / filename
-    with open(path, "wb") as f:
-        for chunk in r.iter_content(chunk_size=4096):
-            if chunk:
-                f.write(chunk)
-    log("Saved music to", path)
-    return str(path)
-
-# ---------- 6) Text overlay rendering (full-width caption panels) ----------
-def render_caption_image(text, filename_prefix="caption", w=TEXT_AREA_W, h=TEXT_AREA_H, fontsize=56):
-    # Render a full-width image (VIDEO_W x TEXT_AREA_H) with semi-transparent black rectangle + white text
+# ---------- 5) Caption rendering ----------
+def render_caption_image(text, h=TEXT_AREA_H, fontsize=56):
+    # Create caption image sized VIDEO_W x h with semi-transparent panel and centered lines
     try:
         if FONT_PATH and Path(FONT_PATH).exists():
             font = ImageFont.truetype(FONT_PATH, fontsize)
@@ -151,20 +192,15 @@ def render_caption_image(text, filename_prefix="caption", w=TEXT_AREA_W, h=TEXT_
     except Exception:
         font = ImageFont.load_default()
 
-    img = Image.new("RGBA", (VIDEO_W, h), (0, 0, 0, 0))
+    img = Image.new("RGBA", (VIDEO_W, h), (0,0,0,0))
     draw = ImageDraw.Draw(img)
 
-    # Draw semi-transparent rounded rectangle as background for text
-    rect_h = h
-    rect_w = VIDEO_W
-    rect_x0, rect_y0 = 0, 0
-    rect_x1, rect_y1 = rect_w, rect_h
-    # semi-transparent black
-    draw.rectangle([rect_x0, rect_y0, rect_x1, rect_y1], fill=(0, 0, 0, 180))
+    # draw semi-transparent rounded rectangle or rectangle
+    draw.rectangle([0, 0, VIDEO_W, h], fill=(0,0,0,160))
 
-    # Wrap text
-    margin = 40
-    max_w = VIDEO_W - margin * 2
+    # wrap text
+    margin = 60
+    max_w = VIDEO_W - 2*margin
     words = text.split(" ")
     lines = []
     cur = ""
@@ -174,17 +210,17 @@ def render_caption_image(text, filename_prefix="caption", w=TEXT_AREA_W, h=TEXT_
         if tw <= max_w:
             cur = test
         else:
-            lines.append(cur)
+            if cur:
+                lines.append(cur)
             cur = word
     if cur:
         lines.append(cur)
 
-    # Compute vertical start
-    total_h = sum(draw.textsize(line, font=font)[1] for line in lines) + (len(lines)-1) * 6
-    y = (h - total_h) // 2
+    total_h = sum(draw.textsize(line, font=font)[1] for line in lines) + (len(lines)-1)*6
+    y = (h - total_h)//2
     for line in lines:
         tw, th = draw.textsize(line, font=font)
-        x = (VIDEO_W - tw) // 2
+        x = (VIDEO_W - tw)//2
         # stroke for readability
         for ox in (-1,0,1):
             for oy in (-1,0,1):
@@ -192,85 +228,82 @@ def render_caption_image(text, filename_prefix="caption", w=TEXT_AREA_W, h=TEXT_
         draw.text((x, y), line, font=font, fill=(255,255,255,255))
         y += th + 6
 
-    fname = WORKDIR / f"{filename_prefix}_{abs(hash(text))}.png"
-    img.save(fname, "PNG")
-    return str(fname)
+    out = WORKDIR / f"caption_{abs(hash(text))}.png"
+    img.save(out, "PNG")
+    return str(out)
 
-# ---------- 7) Build video (sync durations to TTS) ----------
-def build_video(image_paths, lines, tts_path, tts_duration, music_path=None, outpath="final.mp4"):
-    log("Building video...")
-    # compute per-image duration from tts_duration so voice and images align
-    per_image_duration = max(1.6, float(tts_duration) / max(1, len(image_paths)))
-    crossfade = min(0.5, per_image_duration * 0.25)
-    log(f"Per image duration: {per_image_duration}s, crossfade: {crossfade}s")
+# ---------- 6) Build video with per-line sync ----------
+def build_video_per_line(image_paths, lines, tts_paths, tts_durations, music_path=None, outpath="final.mp4"):
+    log("Building professional short (per-line sync)...")
+    # For each line, select an image (rotate or reuse) and create an ImageClip with duration = line duration
+    clips = []
+    cumulative_time = 0.0
+    zoom_rate = 0.015  # slow zoom per second
+    for i, (line, tts_dur) in enumerate(zip(lines, tts_durations)):
+        img_path = image_paths[i % len(image_paths)]
+        # create clip with small Ken-Burns zoom (scale increases slowly)
+        def make_resize_factor(t, base=1.0, rate=zoom_rate):
+            return base + rate * t
+        clip = ImageClip(img_path).set_duration(tts_dur).resize(lambda t: 1 + zoom_rate * t).set_position(("center","center"))
+        # optional crossfade - will be applied during concatenate
+        # caption overlay for this line
+        caption_path = render_caption_image(line)
+        caption_clip = ImageClip(caption_path).set_duration(tts_dur).set_position(("center", int(VIDEO_H*0.62))).set_start(cumulative_time)
+        # set start time later when concatenated; instead we will build sequence and then composite with captions using start offsets
+        clip = clip.set_start(cumulative_time)
+        clips.append((clip, caption_clip))
+        cumulative_time += tts_dur
 
-    img_clips = []
-    for p in image_paths:
-        clip = ImageClip(p).set_duration(per_image_duration).resize((VIDEO_W, VIDEO_H))
-        img_clips.append(clip)
+    # Now build video timeline: concatenate image clips (they already have start times)
+    # MoviePy prefers clips without overlapping for concatenate_videoclips, so instead we'll create a CompositeVideoClip with the clips each at their start
+    video_clips = [c.set_start(c.start) for (c, _) in clips]
+    base_video = CompositeVideoClip(video_clips, size=(VIDEO_W, VIDEO_H)).set_duration(cumulative_time)
 
-    for i in range(1, len(img_clips)):
-        img_clips[i] = img_clips[i].crossfadein(crossfade)
+    # audio: place each tts at corresponding start time
+    audio_pieces = []
+    for i, tts_file in enumerate(tts_paths):
+        a = AudioFileClip(tts_file).set_start(sum(tts_durations[:i]))
+        audio_pieces.append(a)
+    tts_composite = CompositeAudioClip(audio_pieces).set_duration(cumulative_time) if audio_pieces else None
 
-    base_video = concatenate_videoclips(img_clips, method="compose")
-    log("Base video duration (s):", base_video.duration)
-
-    # Audio: TTS + optional music (looped and ducked)
-    tts_audio = None
-    if tts_path and Path(tts_path).exists():
-        tts_audio = AudioFileClip(tts_path)
-        log("Loaded TTS audio duration:", tts_audio.duration)
-
+    # music (looped and ducked)
     music_audio = None
     if music_path and Path(music_path).exists():
-        music_audio = AudioFileClip(music_path).fx(afx.audio_loop, duration=base_video.duration)
-        log("Loaded music audio")
+        music_audio = AudioFileClip(music_path).fx(afx.audio_loop, duration=cumulative_time).volumex(0.12)
 
-    final_audio = None
-    if music_audio and tts_audio:
-        # duck music: low volume overall, keep voice at normal
-        music_audio = music_audio.volumex(0.12)
-        # ensure tts lasts and music loops behind
-        final_audio = CompositeAudioClip([music_audio.set_duration(base_video.duration), tts_audio.set_start(0)])
+    if music_audio and tts_composite:
+        final_audio = CompositeAudioClip([music_audio, tts_composite]).set_duration(cumulative_time)
+    elif tts_composite:
+        final_audio = tts_composite
     elif music_audio:
-        final_audio = music_audio.volumex(0.6).set_duration(base_video.duration)
-    elif tts_audio:
-        final_audio = tts_audio.set_duration(base_video.duration)
+        final_audio = music_audio
     else:
         final_audio = None
 
     if final_audio:
         base_video = base_video.set_audio(final_audio)
 
-    # Overlays: create caption images for each line and show sequentially
-    total_line_time = base_video.duration
-    line_time = max(1.2, total_line_time / max(1, len(lines)))
-    overlays = []
-    start = 0.4
-    for line in lines:
-        caption_path = render_caption_image(line, fontsize=56)
-        # show caption near bottom (y ~ 65% of video)
-        clip = ImageClip(caption_path).set_duration(line_time).set_start(start).set_position(("center", int(VIDEO_H*0.62))).crossfadein(0.15).crossfadeout(0.15)
-        overlays.append(clip)
-        start += line_time
+    # Now add caption clips (they include start times)
+    caption_clips = [cap.set_start(cap.start) for (_, cap) in clips]
+    final = CompositeVideoClip([base_video] + caption_clips, size=(VIDEO_W, VIDEO_H)).set_duration(cumulative_time)
 
-    # Composite overlays onto base video
-    all_clips = [base_video] + overlays
-    final = CompositeVideoClip(all_clips, size=(VIDEO_W, VIDEO_H))
-    log("Final composite duration (s):", final.duration)
-
-    # write file
-    log("Writing final video file (this can take a minute)...")
-    final.write_videofile(outpath, fps=24, codec="libx264", audio_codec="aac", threads=2, preset="medium")
-    log("Saved video to", outpath)
+    # small crossfade between segments for smoother transitions:
+    # Instead of complex overlapping, we keep simple crossfade by writing with codec and small fade settings
+    log("Final duration (s):", final.duration)
+    log("Writing final video to", outpath)
+    final.write_videofile(outpath, fps=24, codec="libx264", audio_codec="aac", threads=2, preset="fast")
     # close audio clips to free resources
-    if tts_audio:
-        tts_audio.close()
+    for a in audio_pieces:
+        try:
+            a.close()
+        except Exception:
+            pass
     if music_audio:
         music_audio.close()
+    log("Saved video to", outpath)
     return outpath
 
-# ---------- 8) YouTube helpers ----------
+# ---------- 7) YouTube helpers ----------
 def get_youtube_service():
     log("Preparing YouTube credentials via refresh token...")
     if not (YT_CLIENT_ID and YT_CLIENT_SECRET and YT_REFRESH_TOKEN):
@@ -312,11 +345,26 @@ def main():
         topic = get_trending_topic()
         lines = create_gossip_lines(topic)
         images = download_images(topic, n=NUM_IMAGES)
-        tts_path, tts_dur = create_tts_audio(lines)
-        music_path = download_music(MUSIC_URL) if MUSIC_URL else None
+        # per-line TTS + durations
+        tts_paths, durations = create_tts_per_line(lines)
+        music_path = None
+        if MUSIC_URL:
+            try:
+                music_path = download_to = WORKDIR / "bgmusic.mp3"
+                r = requests.get(MUSIC_URL, stream=True, timeout=30)
+                r.raise_for_status()
+                with open(download_to, "wb") as fh:
+                    for chunk in r.iter_content(4096):
+                        if chunk:
+                            fh.write(chunk)
+                music_path = str(download_to)
+                log("Downloaded music to", music_path)
+            except Exception as e:
+                log("Failed to download MUSIC_URL:", e)
+                music_path = None
 
         video_path = WORKDIR / "final.mp4"
-        video_file = build_video(images, lines, tts_path, tts_dur, music_path=music_path, outpath=str(video_path))
+        video_file = build_video_per_line(images, lines, tts_paths, durations, music_path=music_path, outpath=str(video_path))
 
         title = f"{topic} — Fans React #shorts"
         description = (
