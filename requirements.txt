@@ -5,3 +5,5 @@ Pillow==9.5.0
 google-api-python-client==2.89.0
 google-auth==2.23.0
 google-auth-oauthlib==1.2.1
+mutagen==1.47.0
+
