@@ -7,7 +7,7 @@ from pathlib import Path
 from gtts import gTTS
 from PIL import Image, ImageDraw, ImageFont
 from moviepy.editor import (
-    ImageClip, AudioFileClip, CompositeVideoClip, CompositeAudioClip, vfx, afx
+    ImageClip, AudioFileClip, CompositeVideoClip, concatenate_audioclips
 )
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
@@ -35,22 +35,19 @@ def get_news():
     log("Fetching news...")
     url = f"https://newsapi.org/v2/top-headlines?category=entertainment&pageSize=5&apiKey={NEWS_API_KEY}"
     r = requests.get(url, timeout=10)
-    try:
-        data = r.json()
-    except Exception:
-        raise RuntimeError("NewsAPI did not return JSON")
+    data = r.json()
     
     if data.get("status") != "ok":
         raise RuntimeError(f"NewsAPI error: {data.get('message', 'unknown error')}")
     
     articles = data.get("articles")
-    if not articles or len(articles) == 0:
+    if not articles:
         raise RuntimeError("No articles returned from NewsAPI")
     
     article = articles[0]
     title = article.get("title", "No title")
     description = article.get("description", "")
-    image_url = article.get("urlToImage", None)
+    image_url = article.get("urlToImage")
     log(f"Fetched article title: {title}")
     return title, description, image_url
 
@@ -131,33 +128,33 @@ def render_caption_image(text, h=TEXT_AREA_H, fontsize=56):
 
 # ---------------- BUILD VIDEO ----------------
 def build_video(bg_image, lines, audio_files, durations):
-    clips = []
+    total_duration = sum(durations)
+    log(f"Total video duration: {total_duration:.2f}s")
+
+    # Combine TTS audios
+    combined_audio = concatenate_audioclips([AudioFileClip(aud) for aud in audio_files])
+
+    # Background clip
+    bg_clip = ImageClip(bg_image).set_duration(total_duration).resize((VIDEO_W, VIDEO_H))
+
+    # Caption clips
+    caption_clips = []
     cumulative = 0
-    zoom_rate = 0.02
-    for i, (line, aud_dur) in enumerate(zip(lines, durations)):
-        clip = ImageClip(bg_image).set_duration(aud_dur).resize(width=VIDEO_W).set_position(("center","center"))
-        clip = clip.fx(vfx.resize, lambda t: 1 + zoom_rate * t)
-        clip = clip.set_start(cumulative)
+    for line, dur in zip(lines, durations):
         caption_path = render_caption_image(line)
-        caption_clip = ImageClip(caption_path).set_duration(aud_dur).set_start(cumulative).set_position(("center", int(VIDEO_H*0.76)))
-        clips.append((clip, caption_clip))
-        cumulative += aud_dur
-    
-    image_clips = [c.set_start(c.start) for (c,_) in clips]
-    base = CompositeVideoClip(image_clips, size=(VIDEO_W, VIDEO_H)).set_duration(cumulative)
-    
-    audio_pieces = [AudioFileClip(aud).set_start(sum(durations[:i])) for i,aud in enumerate(audio_files)]
-    final_audio = CompositeAudioClip(audio_pieces).set_duration(cumulative)
-    
-    caption_clips = [cap.set_start(cap.start) for (_,cap) in clips]
-    final = CompositeVideoClip([base]+caption_clips, size=(VIDEO_W, VIDEO_H)).set_duration(cumulative)
-    final = final.set_audio(final_audio)
-    
+        caption_clip = ImageClip(caption_path).set_duration(dur).set_start(cumulative).set_position(("center", int(VIDEO_H*0.76)))
+        caption_clips.append(caption_clip)
+        cumulative += dur
+
+    # Composite final video
+    final = CompositeVideoClip([bg_clip] + caption_clips, size=(VIDEO_W, VIDEO_H))
+    final = final.set_audio(combined_audio)
+
     out_path = WORKDIR / "final.mp4"
-    final.write_videofile(str(out_path), fps=24, codec="libx264", audio_codec="aac", threads=2, preset="fast")
-    
-    for a in audio_pieces: a.close()
-    final_audio.close()
+    log("Rendering video... this may take a few minutes at full HD")
+    final.write_videofile(str(out_path), fps=24, codec="libx264", audio_codec="aac", threads=4, preset="ultrafast")
+
+    combined_audio.close()
     return str(out_path)
 
 # ---------------- YOUTUBE UPLOAD ----------------
