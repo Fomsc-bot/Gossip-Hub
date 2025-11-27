@@ -8,7 +8,10 @@ from googleapiclient.http import MediaFileUpload
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 
-# ---------------- CONFIG ----------------
+# ------------------------------------------------------
+#                      CONFIG
+# ------------------------------------------------------
+
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
 JSON2VIDEO_API_KEY = os.getenv("JSON2VIDEO_API_KEY")
@@ -21,52 +24,64 @@ WORKDIR.mkdir(exist_ok=True)
 
 def log(*a): print("[BOT]", *a)
 
-# ---------------- UTIL ----------------
-def sanitize(x):
-    return re.sub(r"[^\x00-\x7F]+", "", x).strip()[:95]
+# ------------------------------------------------------
+#                 UTILITIES
+# ------------------------------------------------------
+def sanitize(txt):
+    return re.sub(r"[^\x00-\x7F]+", "", txt).strip()[:95]
 
 def short_title(topic):
-    words = topic.split()
-    clean = " ".join(words[:4])
-    return sanitize(clean + " 🔥 #shorts")
+    topic = sanitize(topic)
+    parts = topic.split()[:4]
+    return " ".join(parts) + " 🔥 #shorts"
 
-# ---------------- 1. GET TRENDING TOPIC ----------------
+
+# ------------------------------------------------------
+#     1. GET TRENDING ENTERTAINMENT TOPIC
+# ------------------------------------------------------
 def get_topic():
     url = f"https://newsapi.org/v2/top-headlines?category=entertainment&pageSize=5&apiKey={NEWS_API_KEY}"
     r = requests.get(url)
     r.raise_for_status()
-    article = r.json()["articles"][0]
-    return article["title"]
+    return r.json()["articles"][0]["title"]
 
-# ---------------- 2. GENERATE LINES ----------------
+
+# ------------------------------------------------------
+#               2. WRITE VIDEO TEXT
+# ------------------------------------------------------
 def build_lines(topic):
     topic = sanitize(topic)
     return [
-        f"Fans Reacting to: {topic}",
-        "Social media is exploding...",
-        "People are shocked!",
-        "Everyone is talking about it!",
-        "What do YOU think?"
+        f"Fans Reacting To: {topic}",
+        "Social Media Is Exploding...",
+        "People Are Shocked!",
+        "Everyone Is Talking About It!",
+        "What Do YOU Think?"
     ]
 
-# ---------------- 3. GET IMAGES ----------------
+
+# ------------------------------------------------------
+#          3. FETCH IMAGES FROM PEXELS/UNSPLASH
+# ------------------------------------------------------
 def get_images(topic):
-    words = topic.split()[:3]
+    words = sanitize(topic).split()[:3]
     headers = {"Authorization": PEXELS_API_KEY}
     images = []
 
     for w in words:
-        url = f"https://api.pexels.com/v1/search?query={w}&per_page=5"
-        r = requests.get(url, headers=headers)
-
-        if r.status_code == 200:
-            for p in r.json().get("photos", []):
-                images.append(p["src"]["portrait"])
+        try:
+            url = f"https://api.pexels.com/v1/search?query={w}&per_page=5"
+            r = requests.get(url, headers=headers)
+            if r.status_code == 200:
+                for p in r.json().get("photos", []):
+                    images.append(p["src"]["portrait"])
+        except:
+            pass
 
         if len(images) >= 5:
             break
 
-    # fallback → Unsplash
+    # fallback – Unsplash
     if len(images) < 5:
         for w in words:
             for i in range(3):
@@ -74,29 +89,40 @@ def get_images(topic):
 
     return images[:5]
 
-# ---------------- 4. JSON2VIDEO RENDER ----------------
+
+# ------------------------------------------------------
+#             4. BUILD JSON2VIDEO MOVIE
+# ------------------------------------------------------
 def build_json2video(images, lines):
-    slides = []
+    scenes = []
 
     for i in range(len(lines)):
-        slides.append({
-            "type": "scene",
-            "duration": 3.5,
-            "background": images[i],
+        scenes.append({
+            "duration": 3.3,
+            "background": {
+                "image": images[i],
+                "kenburns": True
+            },
             "elements": [
                 {
                     "type": "text",
                     "text": lines[i],
-                    "position": "center",
-                    "animation": "slide_up",
+                    "x": "50%",
+                    "y": "80%",
+                    "width": "90%",
                     "style": {
-                        "fontSize": 64,
+                        "fontSize": 60,
                         "fontFamily": "Montserrat",
                         "fontWeight": "700",
                         "color": "white",
+                        "textAlign": "center",
                         "background": "rgba(0,0,0,0.55)",
                         "padding": 40,
                         "borderRadius": 30
+                    },
+                    "animation": {
+                        "type": "slide-up",
+                        "duration": 0.7
                     }
                 }
             ]
@@ -104,11 +130,11 @@ def build_json2video(images, lines):
 
     payload = {
         "output": {
-            "format": "mp4",
             "resolution": "1080x1920",
+            "format": "mp4",
             "fps": 30
         },
-        "timeline": slides
+        "scenes": scenes
     }
 
     headers = {
@@ -116,32 +142,44 @@ def build_json2video(images, lines):
         "Content-Type": "application/json"
     }
 
-    log("Submitting JSON2Video job...")
-    r = requests.post("https://api.json2video.com/v2/render", json=payload, headers=headers)
+    log("Submitting JSON2Video movie job...")
+
+    r = requests.post("https://api.json2video.com/v2/movies", json=payload, headers=headers)
+
     if "id" not in r.json():
-        log("JSON2Video error response:", r.text)
-        raise RuntimeError("JSON2Video did not return job ID")
+        log("JSON2Video ERROR:", r.text)
+        raise RuntimeError("JSON2Video did not return a movie ID")
 
-    job_id = r.json()["id"]
+    movie_id = r.json()["id"]
 
-    log("Job queued. Waiting...")
+    log("Movie queued. Waiting...")
+
+    # poll job until done
     while True:
-        status = requests.get(f"https://api.json2video.com/v2/render/{job_id}", headers=headers).json()
+        status = requests.get(
+            f"https://api.json2video.com/v2/movies/{movie_id}",
+            headers=headers
+        ).json()
 
         if status["status"] == "completed":
             url = status["output"]["url"]
             vid_path = WORKDIR / "final.mp4"
+
             with open(vid_path, "wb") as f:
                 f.write(requests.get(url).content)
-            log("Video downloaded.")
+
+            log("Video ready and downloaded!")
             return str(vid_path)
 
         if status["status"] == "failed":
-            raise RuntimeError("JSON2Video FAILED")
+            raise RuntimeError("JSON2VIDEO FAILED")
 
         time.sleep(3)
 
-# ---------------- 5. UPLOAD TO YOUTUBE ----------------
+
+# ------------------------------------------------------
+#                 5. UPLOAD TO YOUTUBE
+# ------------------------------------------------------
 def yt_service():
     creds = Credentials(
         token=None,
@@ -160,7 +198,7 @@ def upload(video_path, title):
     body = {
         "snippet": {
             "title": sanitize(title),
-            "description": "Trending reactions • Breaking Entertainment Buzz\n#shorts",
+            "description": "Trending Entertainment Reactions • #shorts",
             "tags": ["shorts", "trending", "celebrity"]
         },
         "status": {
@@ -169,31 +207,36 @@ def upload(video_path, title):
     }
 
     media = MediaFileUpload(video_path, chunksize=-1, resumable=True)
-    request = yt.videos().insert(part="snippet,status", body=body, media_body=media)
+    req = yt.videos().insert(part="snippet,status", body=body, media_body=media)
 
-    response = None
-    while response is None:
-        status, response = request.next_chunk()
+    resp = None
+    while resp is None:
+        status, resp = req.next_chunk()
 
-    log("Uploaded video:", response["id"])
-    return response["id"]
+    log("Uploaded to YouTube:", resp["id"])
+    return resp["id"]
 
-# ---------------- MAIN ----------------
+
+# ------------------------------------------------------
+#                    MAIN
+# ------------------------------------------------------
 def main():
     log("Starting pipeline...")
+
     topic = get_topic()
     log("Topic:", topic)
 
     lines = build_lines(topic)
     images = get_images(topic)
-    log("Using images:", images)
+    log("Images:", images)
 
     video = build_json2video(images, lines)
 
     title = short_title(topic)
     upload(video, title)
 
-    log("DONE.")
+    log("DONE!")
+
 
 if __name__ == "__main__":
     main()
