@@ -1,9 +1,7 @@
 import os
 import requests
-import random
 from moviepy.editor import (
     ImageClip,
-    TextClip,
     CompositeVideoClip,
     concatenate_videoclips,
     AudioFileClip
@@ -17,7 +15,7 @@ MUSIC_URL = os.getenv("MUSIC_URL", "")
 
 VIDEO_WIDTH = 1920
 VIDEO_HEIGHT = 1080
-IMAGE_DURATION = 5  # seconds each frame
+IMAGE_DURATION = 5
 
 
 # -------------------------------------------------------
@@ -26,93 +24,113 @@ IMAGE_DURATION = 5  # seconds each frame
 def get_news():
     print("[BOT] Fetching news...")
 
-    url = f"https://newsapi.org/v2/top-headlines?country=us&pageSize=5&apiKey={NEWS_API_KEY}"
-    r = requests.get(url).json()
+    try:
+        r = requests.get(
+            f"https://newsapi.org/v2/top-headlines?country=us&pageSize=5&apiKey={NEWS_API_KEY}",
+            timeout=10
+        ).json()
+    except Exception as e:
+        raise RuntimeError("❌ Network issue while fetching news") from e
 
-    if "articles" not in r or len(r["articles"]) == 0:
-        raise ValueError("❌ NEWS API returned no articles")
+    if not r or "articles" not in r or len(r["articles"]) == 0:
+        raise ValueError("❌ No news returned from API")
 
     article = r["articles"][0]
 
-    title = article.get("title", "Breaking News")
-    desc = article.get("description", "No description provided.")
-    img_url = article.get("urlToImage")
-
-    print("[BOT] News fetched:", title)
-    return title, desc, img_url
+    return (
+        article.get("title", "Breaking News"),
+        article.get("description", "No description available"),
+        article.get("urlToImage"),
+    )
 
 
 # -------------------------------------------------------
-# DOWNLOAD IMAGE OR CREATE BLACK BACKGROUND
+# DOWNLOAD IMAGE
 # -------------------------------------------------------
 def download_image(url):
     if not url:
-        print("[BOT] No image URL — using black background.")
         return None
 
     try:
-        response = requests.get(url, timeout=10)
-        if response.status_code != 200:
-            print("[BOT] Image download failed — using black background.")
+        r = requests.get(url, timeout=8)
+        if r.status_code != 200:
             return None
 
-        img = Image.open(BytesIO(response.content)).convert("RGB")
-        return img
+        return Image.open(BytesIO(r.content)).convert("RGB")
 
     except Exception:
-        print("[BOT] Error downloading image — black background used.")
         return None
 
 
 # -------------------------------------------------------
-# CREATE HD FRAME
+# FAST TEXT RENDER (NO IMAGEMAGICK)
 # -------------------------------------------------------
-def create_frame(image, title, desc):
-    if image:
-        image = image.resize((VIDEO_WIDTH, VIDEO_HEIGHT))
+def draw_text(text, fontsize=50):
+    """Draw white text onto transparent PNG using PIL (very fast)."""
+    from PIL import ImageDraw, ImageFont
+
+    img = Image.new("RGBA", (VIDEO_WIDTH - 100, 300), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+
+    try:
+        font = ImageFont.truetype("arial.ttf", fontsize)
+    except:
+        font = ImageFont.load_default()
+
+    draw.text((10, 10), text, fill="white", font=font)
+    return img
+
+
+# -------------------------------------------------------
+# CREATE FRAME (FAST)
+# -------------------------------------------------------
+def create_frame(background, title, desc):
+    if background:
+        background = background.resize((VIDEO_WIDTH, VIDEO_HEIGHT))
     else:
-        image = Image.new("RGB", (VIDEO_WIDTH, VIDEO_HEIGHT), color=(0, 0, 0))
+        background = Image.new("RGB", (VIDEO_WIDTH, VIDEO_HEIGHT), (0, 0, 0))
 
-    image_path = "frame_temp.jpg"
-    image.save(image_path)
+    bg_path = "frame.jpg"
+    background.save(bg_path)
 
-    base_clip = ImageClip(image_path).set_duration(IMAGE_DURATION)
+    base = ImageClip(bg_path).set_duration(IMAGE_DURATION)
 
-    title_clip = TextClip(
-        title, fontsize=60, color="white", size=(VIDEO_WIDTH - 100, None), method="caption"
-    ).set_position(("center", 50)).set_duration(IMAGE_DURATION)
+    title_img = draw_text(title, 60)
+    desc_img = draw_text(desc, 40)
 
-    desc_clip = TextClip(
-        desc, fontsize=40, color="white", size=(VIDEO_WIDTH - 100, None), method="caption"
-    ).set_position(("center", VIDEO_HEIGHT - 300)).set_duration(IMAGE_DURATION)
+    title_clip = ImageClip(title_img).set_position(("center", 50)).set_duration(IMAGE_DURATION)
+    desc_clip = ImageClip(desc_img).set_position(("center", VIDEO_HEIGHT - 250)).set_duration(IMAGE_DURATION)
 
-    final = CompositeVideoClip([base_clip, title_clip, desc_clip])
-    return final
+    return CompositeVideoClip([base, title_clip, desc_clip])
 
 
 # -------------------------------------------------------
-# CREATE VIDEO
+# MAKE VIDEO
 # -------------------------------------------------------
 def create_video(frames):
-    print("[BOT] Creating final video...")
+    print("[BOT] Rendering video...")
 
-    final_clip = concatenate_videoclips(frames, method="compose")
+    final = concatenate_videoclips(frames, method="compose")
 
-    # Add background music (optional)
     if MUSIC_URL:
         try:
-            print("[BOT] Adding background music...")
-            music_file = "music.mp3"
-            with open(music_file, "wb") as f:
-                f.write(requests.get(MUSIC_URL).content)
+            music_data = requests.get(MUSIC_URL, timeout=10).content
+            with open("bg.mp3", "wb") as f:
+                f.write(music_data)
 
-            audio = AudioFileClip(music_file).volumex(0.2)
-            final_clip = final_clip.set_audio(audio)
-        except:
-            print("[BOT] Failed to load music. Continuing without it.")
+            bg_audio = AudioFileClip("bg.mp3").volumex(0.2)
+            final = final.set_audio(bg_audio)
+        except Exception:
+            print("[WARN] Could not load music.")
 
-    final_clip.write_videofile("news_video.mp4", fps=30, codec="libx264", audio_codec="aac")
-    print("[BOT] Video saved as news_video.mp4")
+    final.write_videofile(
+        "news_video.mp4",
+        fps=30,
+        codec="libx264",
+        audio_codec="aac",
+        threads=4,          # 🚀 MUCH FASTER
+        preset="ultrafast"  # 🚀 SUPER FAST ENCODING
+    )
 
 
 # -------------------------------------------------------
@@ -121,11 +139,11 @@ def create_video(frames):
 def main():
     title, desc, img_url = get_news()
 
-    frames = []
-    images = [download_image(img_url) for _ in range(NUM_IMAGES)]
+    img = download_image(img_url)
+    if img is None:
+        print("[BOT] No valid image; using black background.")
 
-    for img in images:
-        frames.append(create_frame(img, title, desc))
+    frames = [create_frame(img, title, desc) for _ in range(NUM_IMAGES)]
 
     create_video(frames)
 
