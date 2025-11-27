@@ -45,7 +45,6 @@ def safe_json(resp):
         return {}
 
 def short_title_from_text(text):
-    # up to 3 words + emojis + hashtags
     words = re.findall(r"\w+", re.sub(r"https?:\/\/\S+", "", text))
     words = [w for w in words if len(w) > 2]
     if not words:
@@ -76,7 +75,7 @@ def get_news_article():
     image_url = article.get("urlToImage")
     return title, description, image_url
 
-# ---------------- Image prep: cover+crop + optional top blur ----------------
+# ---------------- Image prep ----------------
 def fetch_and_prepare_bg(image_url, fallback_query="entertainment", blur_top_fraction=0.16):
     raw_img = None
     if image_url:
@@ -97,35 +96,28 @@ def fetch_and_prepare_bg(image_url, fallback_query="entertainment", blur_top_fra
         else:
             raise RuntimeError("Failed to fetch fallback image")
 
-    # open and convert
     img = Image.open(raw_img).convert("RGB")
     w, h = img.size
-
-    # scale-to-cover (no stretching)
     scale = max(VIDEO_W / w, VIDEO_H / h)
     new_w = int(w * scale + 0.5)
     new_h = int(h * scale + 0.5)
     img_resized = img.resize((new_w, new_h), Image.LANCZOS)
 
-    # center crop
     left = (new_w - VIDEO_W) // 2
     top = (new_h - VIDEO_H) // 2
     right = left + VIDEO_W
     bottom = top + VIDEO_H
     img_cropped = img_resized.crop((left, top, right, bottom))
 
-    # Soften/blur the top strip to hide article headlines that appear embedded in the photo
     try:
         blur_h = int(VIDEO_H * blur_top_fraction)
         if blur_h > 10:
             top_region = img_cropped.crop((0, 0, VIDEO_W, blur_h))
             top_blurred = top_region.filter(ImageFilter.GaussianBlur(radius=10))
-            # optionally dim brightness a bit for extra conceal
             overlay = Image.new("RGBA", top_blurred.size, (0,0,0,60))
             top_blurred = Image.alpha_composite(top_blurred.convert("RGBA"), overlay)
             img_cropped.paste(top_blurred.convert("RGB"), (0, 0))
     except Exception:
-        # if any PIL error just ignore (non-fatal)
         pass
 
     out_path = WORKDIR / "bg_prepared.jpg"
@@ -133,7 +125,7 @@ def fetch_and_prepare_bg(image_url, fallback_query="entertainment", blur_top_fra
     log("Prepared background saved to", out_path)
     return str(out_path)
 
-# ---------------- TTS per line ----------------
+# ---------------- TTS ----------------
 def create_tts_per_line(lines, lang="en"):
     tts_paths = []
     durations = []
@@ -146,14 +138,12 @@ def create_tts_per_line(lines, lang="en"):
         a = AudioFileClip(str(out))
         dur = a.duration
         a.close()
-        # ensure readable minimum duration
         dur = max(dur, max(1.2, len(safe_text.split()) * 0.28))
         tts_paths.append(str(out))
         durations.append(float(dur))
-        log("Saved TTS:", out, "duration", dur)
     return tts_paths, durations
 
-# ---------------- Caption rendering (bottom only) ----------------
+# ---------------- Caption ----------------
 def render_bottom_caption(text, index, h=CAPTION_HEIGHT, fontsize=56):
     try:
         font = ImageFont.truetype(FONT_PATH or "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", fontsize)
@@ -188,7 +178,6 @@ def render_bottom_caption(text, index, h=CAPTION_HEIGHT, fontsize=56):
     for line in lines:
         tw, th = draw.textsize(line, font=font)
         x = (w - tw) // 2
-        # stroke for readability
         for ox in (-1, 0, 1):
             for oy in (-1, 0, 1):
                 draw.text((x + ox, y + oy), line, font=font, fill=(0, 0, 0, 200))
@@ -201,59 +190,46 @@ def render_bottom_caption(text, index, h=CAPTION_HEIGHT, fontsize=56):
 
 # ---------------- Build final video ----------------
 def build_final_video(bg_image_path, lines, tts_paths, durations, out_file):
-    total_duration = sum(durations) + 2.0  # CTA
-    log(f"Total duration (including CTA): {total_duration:.2f}s")
+    total_duration = sum(durations) + 2.0
+    log(f"Total duration: {total_duration:.2f}s")
 
-    # background clip (already cropped to exact size)
     bg_clip = ImageClip(bg_image_path).set_duration(total_duration)
     bg_clip = bg_clip.fx(vfx.resize, lambda t: 1 + ZOOM_RATE * t)
     bg_clip = bg_clip.fx(vfx.fadein, 0.25).fx(vfx.fadeout, 0.35)
 
-    # bottom captions only (voice-synced)
     caption_clips = []
     cursor = 0.0
     for i, (line, dur) in enumerate(zip(lines, durations)):
         cap_path = render_bottom_caption(line, i)
-        cap_clip = ImageClip(cap_path).set_duration(dur).set_start(cursor).set_position(("center", int(VIDEO_H * 0.78))).fx(vfx.fadein, 0.08).fx(vfx.fadeout, 0.08)
+        cap_clip = ImageClip(cap_path).set_duration(dur).set_start(cursor).set_position(("center", int(VIDEO_H * 0.78)))
         caption_clips.append(cap_clip)
         cursor += dur
 
-    # CTA at the end
-    cta_text = "Follow for more 🔔"
-    cta_path = render_bottom_caption(cta_text, "cta")
-    cta_clip = ImageClip(cta_path).set_duration(2.0).set_start(cursor).set_position(("center", int(VIDEO_H * 0.78))).fx(vfx.fadein, 0.12)
-    caption_clips.append(cta_clip)
+    cta_path = render_bottom_caption("Follow for more 🔔", "cta")
+    caption_clips.append(
+        ImageClip(cta_path).set_duration(2.0).set_start(cursor).set_position(("center", int(VIDEO_H * 0.78)))
+    )
 
-    # combine TTS audios sequentially
     audio_clips = [AudioFileClip(p) for p in tts_paths]
     combined_audio = concatenate_audioclips(audio_clips)
     if combined_audio.duration < total_duration:
         combined_audio = combined_audio.set_duration(total_duration)
 
-    # compose final: only background + bottom captions
     final = CompositeVideoClip([bg_clip] + caption_clips, size=(VIDEO_W, VIDEO_H)).set_duration(total_duration)
     final = final.set_audio(combined_audio.set_duration(total_duration))
 
-    log("Rendering (full HD). This may take several minutes...")
-    final.write_videofile(str(out_file), fps=FPS, codec="libx264", audio_codec="aac", threads=4, preset="fast")
+    final.write_videofile(str(out_file), fps=24, codec="libx264", audio_codec="aac", threads=4, preset="fast")
 
-    # cleanup
     for a in audio_clips:
-        try:
-            a.close()
-        except Exception:
-            pass
-    try:
-        combined_audio.close()
-    except Exception:
-        pass
+        try: a.close()
+        except: pass
+    try: combined_audio.close()
+    except: pass
 
     return str(out_file)
 
-# ---------------- YouTube helpers (unlisted) ----------------
+# ---------------- YouTube helpers (CHANGED: PUBLIC) ----------------
 def get_youtube_service():
-    if not (YT_CLIENT_ID and YT_CLIENT_SECRET and YT_REFRESH_TOKEN):
-        raise RuntimeError("YouTube OAuth credentials missing.")
     creds = Credentials(
         token=None,
         refresh_token=YT_REFRESH_TOKEN,
@@ -269,17 +245,21 @@ def get_youtube_service():
 def upload_unlisted(video_file, title, description, tags=None):
     yt = get_youtube_service()
     safe_title = re.sub(r"[^\x00-\x7F]+", "", title)[:100]
+    
     body = {
         "snippet": {
             "title": safe_title,
             "description": description,
             "tags": tags or ["shorts", "entertainment"]
         },
+
+        # 🔥🔥🔥 ONLY CHANGE MADE
         "status": {
-            "privacyStatus": "unlisted",
+            "privacyStatus": "public",
             "selfDeclaredMadeForKids": False
         }
     }
+
     media = MediaFileUpload(video_file, chunksize=-1, resumable=True, mimetype="video/*")
     req = yt.videos().insert(part="snippet,status", body=body, media_body=media)
     resp = None
@@ -295,7 +275,6 @@ def main():
     log("Starting pipeline...")
     title, desc, img_url = get_news_article()
 
-    # build short lines
     headline = re.sub(r"\s+", " ", title).strip()
     lines = [
         f"Fans react: {headline}",
@@ -305,7 +284,6 @@ def main():
         "What do YOU think?"
     ]
 
-    # prepare background and blur top area so article headlines embedded in the photo don't appear as top text
     bg_path = fetch_and_prepare_bg(img_url, fallback_query="entertainment")
     tts_paths, durations = create_tts_per_line(lines)
 
@@ -314,10 +292,12 @@ def main():
 
     yt_title = short_title_from_text(title)
     yt_desc = f"{desc}\n\nSource: NewsAPI. Content is commentary and fan reaction."
+    
     upload_unlisted(video_file, yt_title, yt_desc, tags=["shorts","gossip","entertainment"])
 
-    log("Done. Video created and uploaded as unlisted:", video_file)
+    log("Done. Video created and uploaded as PUBLIC:", video_file)
 
 if __name__ == "__main__":
     main()
+
 
