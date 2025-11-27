@@ -2,8 +2,34 @@ name: Auto Gossip Shorts (Publish Twice Daily)
 
 on:
   schedule:
-    - cron: '03 03 * * *'
-    - cron: '15 15 * * *'
+    # Monday (12–3 PM)
+    - cron: '30 12 * * 1'
+    - cron: '00 14 * * 1'
+
+    # Tuesday (2–5 PM)
+    - cron: '30 14 * * 2'
+    - cron: '00 16 * * 2'
+
+    # Wednesday (3–6 PM)
+    - cron: '30 15 * * 3'
+    - cron: '00 17 * * 3'
+
+    # Thursday (12–3 PM)
+    - cron: '30 12 * * 4'
+    - cron: '00 14 * * 4'
+
+    # Friday (3–6 PM)
+    - cron: '30 15 * * 5'
+    - cron: '00 17 * * 5'
+
+    # Saturday (10 AM–1 PM)
+    - cron: '30 10 * * 6'
+    - cron: '00 12 * * 6'
+
+    # Sunday (9–11 AM)
+    - cron: '30 09 * * 0'
+    - cron: '30 10 * * 0'
+
   workflow_dispatch:
 
 jobs:
