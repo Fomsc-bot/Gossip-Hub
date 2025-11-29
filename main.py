@@ -67,12 +67,38 @@ def safe_json(resp):
     except: return {}
 
 
-# ---------------- Short Title (max 3 words + 1 emoji) ----------------
+# ---------------- Short Title (max 3 words + 1 emoji) + HASHTAGS ----------------
 def short_title_from_text(text):
     words = re.findall(r"[A-Za-z]+", text)
     short = " ".join(words[:3]) if words else "Breaking News"
     emoji = random.choice(["🔥", "🎬", "⭐", "⚡", "📸"])
-    return f"{short} {emoji}"
+    base_title = f"{short} {emoji}"
+
+    # ------- NEW: Trending hashtag generator -------
+    hashtags = []
+
+    if GEMINI_API_KEY:
+        try:
+            model = genai.GenerativeModel("gemini-pro")
+            prompt = f"""
+            Give me exactly 3 trending hashtags (no explanation, no numbering) 
+            related to this topic: "{text}". 
+            Only output hashtags, each starting with #.
+            """
+            res = model.generate_content(prompt)
+            raw = res.text.strip()
+            hashtags = re.findall(r"#\w+", raw)[:3]
+        except:
+            hashtags = []
+
+    # fallback hashtags
+    if not hashtags:
+        hashtags = ["#Trending", "#Viral", "#News"]
+
+    hashtag_str = " ".join(hashtags)
+
+    # RETURN title + hashtags
+    return f"{base_title} {hashtag_str}"
 
 
 # ---------------- News fetch ----------------
@@ -300,6 +326,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
