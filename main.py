@@ -16,64 +16,6 @@ from moviepy.editor import (
 )
 
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
-from google.oauth2.credentials import Credentials
-from google.auth.transport.requests import Request
-
-# ---------------- Try to import Gemini safely ----------------
-genai = None
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-try:
-    import google.generativeai as genai_lib
-    genai = genai_lib
-    if GEMINI_API_KEY:
-        try:
-            genai.configure(api_key=GEMINI_API_KEY)
-        except Exception:
-            pass
-except Exception:
-    genai = None
-
-# ---------------- CONFIG ----------------
-NEWS_API_KEY = os.getenv("NEWS_API_KEY")
-YT_CLIENT_ID = os.getenv("YT_CLIENT_ID")
-YT_CLIENT_SECRET = os.getenv("YT_CLIENT_SECRET")
-YT_REFRESH_TOKEN = os.getenv("YT_REFRESH_TOKEN")
-PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
-
-WORKDIR = Path("work")
-WORKDIR.mkdir(exist_ok=True)
-LAST_FILE = WORKDIR / "last_titles.txt"
-
-VIDEO_W, VIDEO_H = 1080, 1920
-CAPTION_HEIGHT = int(VIDEO_H * 0.16)
-FONT_PATH = None
-
-ZOOM_RATE = 0.015
-FPS = 24
-BASE_FONT_SIZE = 56
-SMALL_FONT_SIZE = 46
-MAX_CAPTION_CHARS = 220
-
-
-def log(*a):
-    print("[BOT]", *a)
-
-
-# ---------------- FIXED sanitize_text() ----------------
-def sanitize_text(s: str) -> str:
-    """
-    Fixed version — ALL re.sub() calls now include the required 'string' argument.
-    Prevents the missing-argument TypeError that you got before.
-    """
-    if not s:
-        return ""
-
-    # HTML decode
-    s = html.unescape(s)
-
-    # Fix "Hash 039" → '
-    s = re.sub(r'\bHash\s*0*39\b', "'", s, flags=re.I)
     s = re.sub(r'\bHash\s*#?\d+\b', " ", s, flags=re.I)
     s = re.sub(r'\bNo\.?\s*0*39\b', "'", s, flags=re.I)
     s = re.sub(r'\bNo\.?\s*\d+\b', " ", s, flags=re.I)
@@ -232,7 +174,6 @@ def fetch_and_prepare_bg(image_url, fallback_query="entertainment"):
 
 # ---------------- Script generator ----------------
 def generate_script(headline, description="", lead=""):
-    # Fallback only — to keep code shorter
     return [
         headline,
         "Here’s the latest update on this story.",
@@ -291,7 +232,12 @@ def build_final_video(bg_path, lines, tts_paths, durations, out_file):
     for i, (line, dur) in enumerate(zip(lines, durations)):
         cap_img = render_bottom_caption(line, i)
         cap = ImageClip(cap_img).set_duration(dur).set_start(cursor)
-        cap = cap.set_position(("center", VIDEO_H * 0.78))
+
+        # -----------------------------
+        # FIXED CAPTION POSITION (ONLY CHANGE)
+        # -----------------------------
+        cap = cap.set_position(lambda t: ("center", VIDEO_H - CAPTION_HEIGHT - 20))
+
         caps.append(cap)
         cursor += dur
 
@@ -367,10 +313,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
-
-
