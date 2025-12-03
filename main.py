@@ -4,6 +4,7 @@ import re
 import time
 import random
 import requests
+import html
 from pathlib import Path
 from io import BytesIO
 
@@ -29,7 +30,6 @@ try:
         try:
             genai.configure(api_key=GEMINI_API_KEY)
         except Exception:
-            # If configure fails, continue with genai set but guarded usage.
             pass
 except Exception:
     genai = None
@@ -62,6 +62,41 @@ def log(*a):
     print("[BOT]", *a)
 
 
+# ---------------- Text sanitization helpers ----------------
+def sanitize_text(s: str) -> str:
+    """
+    Decode HTML entities, remove weird "Hash 039"/"No. 039" tokens and stray numeric tokens,
+    remove control characters, normalize whitespace.
+    """
+    if not s:
+        return ""
+    # html unescape first to convert numeric entities like &#039; -> '
+    s = html.unescape(s)
+
+    # Some sources/models may produce "Hash 039" or "No. 039" from "#039;".
+    # Replace common weird patterns with apostrophe or just remove them.
+    s = re.sub(r'\bHash\s*0*39\b', "'", flags=re.I)
+    s = re.sub(r'\bHash\s*#?\d+\b', ' ', s, flags=re.I)
+    s = re.sub(r'\bNo\.?\s*0*39\b', "'", flags=re.I)
+    s = re.sub(r'\bNo\.?\s*\d+\b', ' ', s, flags=re.I)
+    s = re.sub(r'\b[#]\s*0*39\b', "'", flags=re.I)
+
+    # remove leftover tokens like "&#039;" or other numeric references
+    s = re.sub(r'&[#A-Za-z0-9]+;?', lambda m: html.unescape(m.group(0)), s)
+
+    # Remove invisible/control characters
+    s = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', s)
+
+    # Fix weird repeated punctuation patterns
+    s = re.sub(r'\s+([,.\-:;!?])', r'\1', s)
+    s = re.sub(r'\s+', ' ', s).strip()
+
+    # Final safety: strip surrounding quotes from triple sources
+    s = s.strip(" \t\n\"'")
+
+    return s
+
+
 # ---------------- Duplicate Filter ----------------
 def has_uploaded(title):
     if not LAST_FILE.exists():
@@ -83,16 +118,42 @@ def safe_json(resp):
         return {}
 
 
-# ---------------- Short Title (max 3 words + 1 emoji) ----------------
-def short_title_from_text(text):
+# ---------------- Title builder: max 4 words + emoji + hashtags ----------------
+def short_title_from_text(text: str) -> str:
+    text = sanitize_text(text)
+    # Extract words, drop common stopwords
     words = re.findall(r"[A-Za-z0-9']+", text)
-    # drop common small stopwords at front
-    stop = {"the", "a", "an", "in", "on", "at", "by", "for", "to", "of"}
+    stop = {"the", "a", "an", "in", "on", "at", "by", "for", "to", "of", "and", "vs", "vs.", "vs"}
     words = [w for w in words if w.lower() not in stop]
-    short_words = words[:3] if words else ["Hot", "News"]
-    short = " ".join(short_words)
+    short_words = words[:4] if words else ["Hot", "News"]
+    short = " ".join(short_words).strip()
+    # emoji
     emoji = random.choice(["🔥", "🎬", "⭐", "⚡", "📸", "🔔"])
-    return f"{short.strip()} {emoji}"
+
+    # Attempt to generate trending hashtags via Gemini if available
+    hashtags = []
+    if genai and GEMINI_API_KEY:
+        try:
+            model = genai.GenerativeModel("gemini-pro")
+            prompt = f"Give me up to 3 short trending hashtags related to: \"{text}\". Output only hashtags separated by spaces (e.g. #Tag1 #Tag2)."
+            res = model.generate_content(prompt)
+            raw = (res.text or "").strip()
+            # extract hashtags
+            hashtags = re.findall(r"#\w+", raw)[:3]
+        except Exception:
+            hashtags = []
+
+    # Fallback: make hashtags using title words
+    if not hashtags:
+        hs_words = [w.lower() for w in short_words if len(w) > 2][:3]
+        hashtags = [f"#{re.sub(r'[^A-Za-z0-9]', '', h)}" for h in hs_words] or ["#Trending", "#Viral"]
+
+    hashtag_str = " ".join(hashtags)
+    # Final title: up to 4 words + emoji + hashtags
+    final_title = f"{short} {emoji} {hashtag_str}"
+    # ensure ascii-safe and length limit
+    final_title = re.sub(r"[^\x00-\x7F]+", "", final_title)[:120].strip()
+    return final_title
 
 
 # ---------------- News fetch ----------------
@@ -111,14 +172,15 @@ def get_news_article():
         raise RuntimeError("No articles returned.")
 
     for art in articles:
-        title = art.get("title") or "Entertainment Update"
+        raw_title = art.get("title") or "Entertainment Update"
+        title = sanitize_text(raw_title)
         if not has_uploaded(title):
-            description = art.get("description") or ""
+            raw_description = art.get("description") or ""
+            description = sanitize_text(raw_description)
             image_url = art.get("urlToImage")
             article_url = art.get("url")
-            # attempt to get an extra lead/detail from article page
             lead = fetch_article_lead(article_url) if article_url else ""
-            # prefer lead if description is empty
+            lead = sanitize_text(lead)
             if not description and lead:
                 description = lead
             return title, description, image_url, article_url, lead
@@ -140,25 +202,23 @@ def fetch_article_lead(url):
         r = requests.get(url, headers=headers, timeout=8)
         if r.status_code != 200 or not r.text:
             return ""
-        html = r.text
+        html_text = r.text
         # check og:description and meta description
-        m = re.search(r'<meta[^>]+property=["\']og:description["\'][^>]*content=["\']([^"\']+)["\']', html, re.I)
+        m = re.search(r'<meta[^>]+property=["\']og:description["\'][^>]*content=["\']([^"\']+)["\']', html_text, re.I)
         if not m:
-            m = re.search(r'<meta[^>]+name=["\']description["\'][^>]*content=["\']([^"\']+)["\']', html, re.I)
+            m = re.search(r'<meta[^>]+name=["\']description["\'][^>]*content=["\']([^"\']+)["\']', html_text, re.I)
         if m:
             desc = re.sub(r'\s+', ' ', m.group(1)).strip()
-            # return first sentence
             s = re.split(r'[.!?]', desc.strip())[0]
-            return s.strip()
+            return sanitize_text(s.strip())
         # fallback: first meaningful <p> tag (strip HTML)
-        p = re.search(r'<p[^>]*>(.*?)</p>', html, re.I | re.S)
+        p = re.search(r'<p[^>]*>(.*?)</p>', html_text, re.I | re.S)
         if p:
             text = re.sub(r'<[^>]+>', '', p.group(1))
             text = re.sub(r'\s+', ' ', text).strip()
-            # keep reasonable length
             if len(text.split()) > 5:
                 s = re.split(r'[.!?]', text.strip())[0]
-                return s.strip()
+                return sanitize_text(s.strip())
         return ""
     except Exception:
         return ""
@@ -223,18 +283,15 @@ def _fallback_script_from_headline(headline, description="", lead=""):
     ]
     details = []
     if lead:
-        # Use the extracted lead as a detail (trim to short)
         s = re.sub(r'\s+', ' ', lead).strip()
         if len(s.split()) > 3:
             details.append(s if len(s.split()) <= 18 else " ".join(s.split()[:18]) + "...")
     if description:
-        # pull first sentence from description
         ds = re.split(r'[.!?]', description.strip())[0]
         ds = re.sub(r'\s+', ' ', ds).strip()
         if ds and ds not in details:
             details.append(ds if len(ds.split()) <= 18 else " ".join(ds.split()[:18]) + "...")
 
-    # If no details collected add generic context lines
     if not details:
         details = [
             "Sources say the situation is evolving and more info is expected.",
@@ -252,21 +309,18 @@ def _fallback_script_from_headline(headline, description="", lead=""):
         "Follow for more updates as this develops."
     ]
 
-    # Build five lines mixing sources and detail
     line1 = random.choice(hooks)
     line2 = random.choice(explainers)
-    # ensure we put one real detail line (prefer from 'details')
     line3 = details[0]
     line4 = random.choice(context_impact)
     line5 = random.choice(ctas)
 
-    # Clean up & enforce length constraints
     seq = [line1, line2, line3, line4, line5]
     final = []
     prev = None
     for l in seq:
-        s = re.sub(r'\s+', ' ', l).strip()
-        if s != prev:
+        s = sanitize_text(re.sub(r'\s+', ' ', l).strip())
+        if s != prev and s:
             parts = s.split()
             if len(parts) > 16:
                 s = " ".join(parts[:16]) + "..."
@@ -284,17 +338,16 @@ def generate_script(headline, description="", lead=""):
     """
     if genai and GEMINI_API_KEY:
         try:
-            # prepare prompt with headline + description + lead (if present)
             prompt = f"""
 Write a natural, human-sounding 5-line mini-story (short sentences) suitable for a YouTube Shorts voiceover.
 Topic headline:
-\"\"\"{headline}\"\"\"
+\"\"\"{headline}\"\"\" 
 
 Extra context (if any):
-\"\"\"{description or ''}\"\"\"
+\"\"\"{description or ''}\"\"\" 
 
 Lead detail (if available):
-\"\"\"{lead or ''}\"\"\"
+\"\"\"{lead or ''}\"\"\" 
 
 Requirements:
 - Output exactly 5 lines, each on its own line (no numbering).
@@ -307,7 +360,10 @@ Requirements:
             model = genai.GenerativeModel("gemini-pro")
             res = model.generate_content(prompt)
             text = (res.text or "").strip()
-            lines = [l.strip(" -•\t") for l in text.splitlines() if l.strip()]
+            # sanitize output strongly
+            lines = [sanitize_text(l.strip(" -•\t")) for l in text.splitlines() if l.strip()]
+            # filter empties
+            lines = [l for l in lines if l]
             if len(lines) >= 5:
                 out = []
                 for l in lines[:5]:
@@ -340,8 +396,7 @@ def create_tts_per_line(lines):
     durations = []
     for i, line in enumerate(lines):
         out = WORKDIR / f"tts_{i}.mp3"
-        # shorten overly long lines for TTS (but we already limited above)
-        safe_line = line.strip()
+        safe_line = sanitize_text(line)
         # create TTS
         tts = gTTS(text=safe_line, lang="en")
         tts.save(str(out))
@@ -377,10 +432,9 @@ def render_bottom_caption(text, index, h=CAPTION_HEIGHT, base_font_size=BASE_FON
     draw.rectangle([band_margin, 0, w - band_margin, h], fill=(0, 0, 0, 200))
 
     # trim very long inputs to a safety limit
-    text = re.sub(r'\s+', ' ', text).strip()[:MAX_CAPTION_CHARS]
+    text = sanitize_text(re.sub(r'\s+', ' ', text).strip())[:MAX_CAPTION_CHARS]
 
-    # try wrapping into lines that fit
-    # We'll decrease font size until text block fits comfortably
+    # wrap and adjust font size until fits
     font_size = base_font_size
     while font_size >= 26:
         try:
@@ -401,18 +455,16 @@ def render_bottom_caption(text, index, h=CAPTION_HEIGHT, base_font_size=BASE_FON
                 cur = wpart
         if cur:
             lines.append(cur)
-        # estimate height
         total_h = sum(draw.textsize(l, font=font)[1] for l in lines) + (len(lines) - 1) * 6
         if total_h <= h - 16 and len(lines) <= 4:
             break
         font_size -= 4
 
-    # center lines vertically in band
     y = (h - total_h) // 2 if total_h < h else 6
     for ln in lines:
-        tw, th = draw.textsize(ln, font=font)
+        tw, th = draw.textsize(ln, font)
         x = (VIDEO_W - tw) // 2
-        # stroke: draw shadow around text
+        # stroke
         for ox in (-1, 0, 1):
             for oy in (-1, 0, 1):
                 draw.text((x + ox, y + oy), ln, font=font, fill=(0, 0, 0, 220))
@@ -455,7 +507,6 @@ def build_final_video(bg_path, lines, tts_paths, durations, out_file):
     log("Writing video file (this can take several minutes)...")
     final.write_videofile(str(out_file), fps=FPS, codec="libx264", audio_codec="aac", threads=4, preset="fast")
 
-    # cleanup audio objects
     try:
         audio.close()
     except Exception:
@@ -517,6 +568,9 @@ def main():
     log("Generating script (Gemini fallback safe) ...")
     lines = generate_script(title, desc, lead)
 
+    # sanitize generated lines once more (remove any stray tokens)
+    lines = [sanitize_text(l) for l in lines]
+
     # Build background image properly cropped
     bg = fetch_and_prepare_bg(img_url)
     tts_paths, durations = create_tts_per_line(lines)
@@ -536,6 +590,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
