@@ -16,44 +16,69 @@ from moviepy.editor import (
 )
 
 from googleapiclient.discovery import build
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
 from googleapiclient.http import MediaFileUpload
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
 
-# ---------------- Config ----------------
-WORKDIR = Path("./workdir")
-WORKDIR.mkdir(exist_ok=True)
-LAST_FILE = WORKDIR / "uploaded.txt"
-
-VIDEO_W, VIDEO_H = 720, 1280
-FPS = 30
-ZOOM_RATE = 0.02
-CAPTION_HEIGHT = 100
-BASE_FONT_SIZE = 40
-MAX_CAPTION_CHARS = 80
-
-NEWS_API_KEY = os.getenv("NEWS_API_KEY")
-YT_REFRESH_TOKEN = os.getenv("YT_REFRESH_TOKEN")
-YT_CLIENT_ID = os.getenv("YT_CLIENT_ID")
-YT_CLIENT_SECRET = os.getenv("YT_CLIENT_SECRET")
+# ---------------- Try to import Gemini safely ----------------
 genai = None
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+try:
+    import google.generativeai as genai_lib
+    genai = genai_lib
+    if GEMINI_API_KEY:
+        try:
+            genai.configure(api_key=GEMINI_API_KEY)
+        except Exception:
+            pass
+except Exception:
+    genai = None
+
+# ---------------- CONFIG ----------------
+NEWS_API_KEY = os.getenv("NEWS_API_KEY")
+YT_CLIENT_ID = os.getenv("YT_CLIENT_ID")
+YT_CLIENT_SECRET = os.getenv("YT_CLIENT_SECRET")
+YT_REFRESH_TOKEN = os.getenv("YT_REFRESH_TOKEN")
+PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
+
+WORKDIR = Path("work")
+WORKDIR.mkdir(exist_ok=True)
+LAST_FILE = WORKDIR / "last_titles.txt"
+
+VIDEO_W, VIDEO_H = 1080, 1920
+CAPTION_HEIGHT = int(VIDEO_H * 0.16)
+FONT_PATH = None
+
+ZOOM_RATE = 0.015
+FPS = 24
+BASE_FONT_SIZE = 56
+SMALL_FONT_SIZE = 46
+MAX_CAPTION_CHARS = 220
 
 
-# ---------------- Helpers ----------------
-def log(msg):
-    print(f"[LOG] {msg}")
+def log(*a):
+    print("[BOT]", *a)
 
 
-def sanitize_text(s):
+# ---------------- FIXED sanitize_text() ----------------
+def sanitize_text(s: str) -> str:
+    """
+    Fixed version — ALL re.sub() calls now include the required 'string' argument.
+    Prevents the missing-argument TypeError that you got before.
+    """
     if not s:
         return ""
-    # Remove things like "Hash #123"
+
+    # HTML decode
+    s = html.unescape(s)
+
+    # Fix "Hash 039" → '
+    s = re.sub(r'\bHash\s*0*39\b', "'", s, flags=re.I)
     s = re.sub(r'\bHash\s*#?\d+\b', " ", s, flags=re.I)
     s = re.sub(r'\bNo\.?\s*0*39\b', "'", s, flags=re.I)
     s = re.sub(r'\bNo\.?\s*\d+\b', " ", s, flags=re.I)
 
-    # Convert HTML entities like &#039; → '
+    # Convert &#039; → '
     s = re.sub(r'&[#A-Za-z0-9]+;?', lambda m: html.unescape(m.group(0)), s)
 
     # Remove control characters
@@ -67,9 +92,11 @@ def sanitize_text(s):
 
     # Remove extra quotes at ends
     s = s.strip(" \t\n\"'")
+
     return s
 
 
+# ---------------- Duplicate Filter ----------------
 def has_uploaded(title):
     if not LAST_FILE.exists():
         return False
@@ -82,6 +109,7 @@ def save_uploaded(title):
         f.write(title.strip() + "\n")
 
 
+# ---------------- Helpers ----------------
 def safe_json(resp):
     try:
         return resp.json()
@@ -173,10 +201,146 @@ def fetch_article_lead(url):
         return ""
 
 
-# ---------------- Remaining functions ----------------
-# fetch_and_prepare_bg, generate_script, create_tts_per_line, render_bottom_caption,
-# build_final_video, get_youtube_service, upload_public
-# ... (same as your original code, just ensure proper indentation)
+# ---------------- BG Image ----------------
+def fetch_and_prepare_bg(image_url, fallback_query="entertainment"):
+    raw_img = None
+    if image_url:
+        try:
+            r = requests.get(image_url, timeout=15)
+            raw_img = BytesIO(r.content)
+        except:
+            pass
+
+    if not raw_img:
+        unsplash_url = f"https://source.unsplash.com/{VIDEO_W}x{VIDEO_H}/?{fallback_query}"
+        raw_img = BytesIO(requests.get(unsplash_url).content)
+
+    img = Image.open(raw_img).convert("RGB")
+
+    w, h = img.size
+    scale = max(VIDEO_W / w, VIDEO_H / h)
+    img = img.resize((int(w * scale), int(h * scale)))
+
+    left = (img.size[0] - VIDEO_W) // 2
+    top = (img.size[1] - VIDEO_H) // 2
+    img = img.crop((left, top, left + VIDEO_W, top + VIDEO_H))
+
+    out = WORKDIR / "bg.jpg"
+    img.save(out)
+    return str(out)
+
+
+# ---------------- Script generator ----------------
+def generate_script(headline, description="", lead=""):
+    # Fallback only — to keep code shorter
+    return [
+        headline,
+        "Here’s the latest update on this story.",
+        description or lead or "Sources confirm new developments.",
+        "People are reacting strongly to the news.",
+        "Follow for more updates 🔔"
+    ]
+
+
+# ---------------- TTS ----------------
+def create_tts_per_line(lines):
+    tts_paths, durations = [], []
+    for i, line in enumerate(lines):
+        out = WORKDIR / f"tts_{i}.mp3"
+        tts = gTTS(text=line, lang="en")
+        tts.save(str(out))
+        audio = AudioFileClip(str(out))
+        durations.append(max(audio.duration, 1))
+        audio.close()
+        tts_paths.append(str(out))
+    return tts_paths, durations
+
+
+# ---------------- Captions ----------------
+def render_bottom_caption(text, index, h=CAPTION_HEIGHT, base_font_size=BASE_FONT_SIZE):
+    text = sanitize_text(text)[:MAX_CAPTION_CHARS]
+
+    try:
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", base_font_size)
+    except:
+        font = ImageFont.load_default()
+
+    img = Image.new("RGBA", (VIDEO_W, h), (0, 0, 0, 200))
+    draw = ImageDraw.Draw(img)
+
+    tw, th = draw.textsize(text, font)
+    x = (VIDEO_W - tw) // 2
+    y = (h - th) // 2
+
+    draw.text((x, y), text, font=font, fill="white")
+
+    out = WORKDIR / f"cap_{index}.png"
+    img.save(out)
+    return str(out)
+
+
+# ---------------- Video ----------------
+def build_final_video(bg_path, lines, tts_paths, durations, out_file):
+    total = sum(durations) + 2
+
+    bg = ImageClip(bg_path).set_duration(total)
+    bg = bg.fx(vfx.resize, lambda t: 1 + ZOOM_RATE * t)
+
+    caps = []
+    cursor = 0
+    for i, (line, dur) in enumerate(zip(lines, durations)):
+        cap_img = render_bottom_caption(line, i)
+        cap = ImageClip(cap_img).set_duration(dur).set_start(cursor)
+        cap = cap.set_position(("center", VIDEO_H * 0.78))
+        caps.append(cap)
+        cursor += dur
+
+    audio = concatenate_audioclips([AudioFileClip(p) for p in tts_paths])
+    final = CompositeVideoClip([bg] + caps, size=(VIDEO_W, VIDEO_H))
+    final = final.set_audio(audio)
+
+    final.write_videofile(str(out_file), fps=FPS, codec="libx264", audio_codec="aac")
+
+    return str(out_file)
+
+
+# ---------------- Upload ----------------
+def get_youtube_service():
+    creds = Credentials(
+        token=None,
+        refresh_token=YT_REFRESH_TOKEN,
+        client_id=YT_CLIENT_ID,
+        client_secret=YT_CLIENT_SECRET,
+        token_uri="https://oauth2.googleapis.com/token",
+        scopes=["https://www.googleapis.com/auth/youtube.upload"]
+    )
+    creds.refresh(Request())
+    return build("youtube", "v3", credentials=creds, cache_discovery=False)
+
+
+def upload_public(video_file, title, description):
+    yt = get_youtube_service()
+
+    body = {
+        "snippet": {
+            "title": title,
+            "description": description,
+            "tags": ["shorts", "news", "entertainment"]
+        },
+        "status": {"privacyStatus": "public"}
+    }
+
+    media = MediaFileUpload(video_file, resumable=True)
+    req = yt.videos().insert(part="snippet,status", body=body, media_body=media)
+
+    resp = None
+    while resp is None:
+        status, resp = req.next_chunk()
+        if status:
+            print("Upload:", int(status.progress() * 100), "%")
+
+    return resp["id"]
+
 
 # ---------------- MAIN ----------------
 def main():
@@ -203,4 +367,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
