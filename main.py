@@ -1,3 +1,4 @@
+#on the following code the sometimes the captions are out of the frame correct it and give me the full code do not change anything elase. 
 # main.py
 import os
 import re
@@ -7,7 +8,6 @@ import requests
 import html
 from pathlib import Path
 from io import BytesIO
-import textwrap
 
 from gtts import gTTS
 from PIL import Image, ImageDraw, ImageFont
@@ -205,41 +205,19 @@ def fetch_article_lead(url):
 # ---------------- BG Image ----------------
 def fetch_and_prepare_bg(image_url, fallback_query="entertainment"):
     raw_img = None
-    # Try the provided image URL first (if any)
     if image_url:
         try:
             r = requests.get(image_url, timeout=15)
-            # Only accept successful responses
-            if r.status_code == 200 and r.content:
-                raw_img = BytesIO(r.content)
-        except Exception:
-            raw_img = None
+            raw_img = BytesIO(r.content)
+        except:
+            pass
 
-    # If no valid image bytes from url, fetch Unsplash fallback
     if not raw_img:
-        try:
-            unsplash_url = f"https://source.unsplash.com/{VIDEO_W}x{VIDEO_H}/?{fallback_query}"
-            r2 = requests.get(unsplash_url, timeout=15)
-            if r2.status_code == 200 and r2.content:
-                raw_img = BytesIO(r2.content)
-        except Exception:
-            raw_img = None
+        unsplash_url = f"https://source.unsplash.com/{VIDEO_W}x{VIDEO_H}/?{fallback_query}"
+        raw_img = BytesIO(requests.get(unsplash_url).content)
 
-    # Final check: try to open image bytes, if fails, raise or create a plain background
-    img = None
-    if raw_img:
-        try:
-            raw_img.seek(0)
-            img = Image.open(raw_img).convert("RGB")
-        except Exception:
-            img = None
+    img = Image.open(raw_img).convert("RGB")
 
-    # If still no valid image, create a simple solid-color background
-    if img is None:
-        log("Warning: couldn't fetch a valid image; using solid color fallback.")
-        img = Image.new("RGB", (VIDEO_W, VIDEO_H), (30, 30, 30))
-
-    # Resize / crop to fit target resolution
     w, h = img.size
     scale = max(VIDEO_W / w, VIDEO_H / h)
     img = img.resize((int(w * scale), int(h * scale)))
@@ -283,106 +261,19 @@ def create_tts_per_line(lines):
 def render_bottom_caption(text, index, h=CAPTION_HEIGHT, base_font_size=BASE_FONT_SIZE):
     text = sanitize_text(text)[:MAX_CAPTION_CHARS]
 
-    # Try to load a decent TTF, otherwise load default
     try:
-        font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-        font = ImageFont.truetype(font_path, base_font_size)
-    except Exception:
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", base_font_size)
+    except:
         font = ImageFont.load_default()
-        # Default font does not support size changes; set base_font_size to a safe small value
-        base_font_size = 14
 
-    # Create the caption image (fixed height h)
     img = Image.new("RGBA", (VIDEO_W, h), (0, 0, 0, 200))
     draw = ImageDraw.Draw(img)
 
-    # Padding inside the caption box
-    pad_x = 40
-    pad_y = 20
+    tw, th = draw.textsize(text, font)
+    x = (VIDEO_W - tw) // 2
+    y = (h - th) // 2
 
-    max_width = VIDEO_W - pad_x * 2
-    max_height = h - pad_y * 2
-
-    # Wrap text into lines that fit the width
-    words = text.split()
-    if not words:
-        lines = [""]
-    else:
-        # Try with the given font size, reduce if necessary
-        font_size = base_font_size
-        while True:
-            try:
-                if isinstance(font, ImageFont.FreeTypeFont):
-                    font = ImageFont.truetype(font_path, font_size)
-                else:
-                    # default font: can't change size
-                    pass
-            except Exception:
-                # fallback to default small font if truetype fails
-                font = ImageFont.load_default()
-
-            lines = []
-            current = ""
-            for w in words:
-                test = f"{current} {w}".strip()
-                tw, th = draw.textsize(test, font=font)
-                if tw <= max_width:
-                    current = test
-                else:
-                    if current:
-                        lines.append(current)
-                    # if single word too long, force-break it using textwrap
-                    if draw.textsize(w, font=font)[0] > max_width:
-                        broken = textwrap.wrap(w, width= max(1, int(len(w) * max_width / draw.textsize(w, font=font)[0])))
-                        for b in broken:
-                            lines.append(b)
-                        current = ""
-                    else:
-                        current = w
-            if current:
-                lines.append(current)
-
-            # compute total text height
-            line_height = draw.textsize("Ay", font=font)[1]
-            spacing = int(line_height * 0.15)
-            total_h = len(lines) * line_height + (len(lines) - 1) * spacing
-
-            # If fits, break; otherwise reduce font size
-            if total_h <= max_height or font_size <= 18:
-                break
-            font_size -= 2
-            if font_size < 12:
-                font_size = 12
-                break
-
-        # If still too tall, truncate last line with ellipsis
-        if total_h > max_height:
-            # remove lines until it fits, then ellipsize last line
-            while len(lines) > 1:
-                lines.pop()
-                line_height = draw.textsize("Ay", font=font)[1]
-                spacing = int(line_height * 0.15)
-                total_h = len(lines) * line_height + (len(lines) - 1) * spacing
-                if total_h <= max_height:
-                    break
-            # ellipsize last line to fit
-            last = lines[-1]
-            ell = "..."
-            while draw.textsize(last + ell, font=font)[0] > max_width and len(last) > 0:
-                last = last[:-1]
-            lines[-1] = last.strip() + ell
-
-    # Final rendering: vertically center the block of lines within the caption area
-    line_height = draw.textsize("Ay", font=font)[1]
-    spacing = int(line_height * 0.15)
-    total_h = len(lines) * line_height + (len(lines) - 1) * spacing
-
-    y = (h - total_h) // 2
-    for line in lines:
-        tw, th = draw.textsize(line, font=font)
-        x = (VIDEO_W - tw) // 2
-        draw.text((x, y), line, font=font, fill="white")
-        y += line_height + spacing
+    draw.text((x, y), text, font=font, fill="white")
 
     out = WORKDIR / f"cap_{index}.png"
     img.save(out)
@@ -477,4 +368,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
