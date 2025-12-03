@@ -19,11 +19,20 @@ from googleapiclient.http import MediaFileUpload
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 
-# ----------- NEW: GEMINI ------------
-import google.generativeai as genai
+# ---------------- Try to import Gemini safely ----------------
+genai = None
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
+try:
+    import google.generativeai as genai_lib
+    genai = genai_lib
+    if GEMINI_API_KEY:
+        try:
+            genai.configure(api_key=GEMINI_API_KEY)
+        except Exception:
+            # If configure fails, continue with genai set but guarded usage.
+            pass
+except Exception:
+    genai = None
 
 # ---------------- CONFIG ----------------
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
@@ -37,11 +46,16 @@ WORKDIR.mkdir(exist_ok=True)
 LAST_FILE = WORKDIR / "last_titles.txt"
 
 VIDEO_W, VIDEO_H = 1080, 1920
-CAPTION_HEIGHT = int(VIDEO_H * 0.18)
-FONT_PATH = None
+CAPTION_HEIGHT = int(VIDEO_H * 0.16)  # slightly smaller to look sleeker
+FONT_PATH = None  # set a TTF path if you want a specific font
 
 ZOOM_RATE = 0.015
 FPS = 24
+
+# default font sizes
+BASE_FONT_SIZE = 56
+SMALL_FONT_SIZE = 46
+MAX_CAPTION_CHARS = 220  # safety limit
 
 
 def log(*a):
@@ -52,58 +66,40 @@ def log(*a):
 def has_uploaded(title):
     if not LAST_FILE.exists():
         return False
-    with open(LAST_FILE, "r") as f:
+    with open(LAST_FILE, "r", encoding="utf-8") as f:
         return title.strip().lower() in f.read().lower()
 
 
 def save_uploaded(title):
-    with open(LAST_FILE, "a") as f:
+    with open(LAST_FILE, "a", encoding="utf-8") as f:
         f.write(title.strip() + "\n")
 
 
 # ---------------- Helpers ----------------
 def safe_json(resp):
-    try: return resp.json()
-    except: return {}
+    try:
+        return resp.json()
+    except Exception:
+        return {}
 
 
-# ---------------- Short Title (max 3 words + 1 emoji) + HASHTAGS ----------------
+# ---------------- Short Title (max 3 words + 1 emoji) ----------------
 def short_title_from_text(text):
-    words = re.findall(r"[A-Za-z]+", text)
-    short = " ".join(words[:3]) if words else "Breaking News"
-    emoji = random.choice(["🔥", "🎬", "⭐", "⚡", "📸"])
-    base_title = f"{short} {emoji}"
-
-    # ------- NEW: Trending hashtag generator -------
-    hashtags = []
-
-    if GEMINI_API_KEY:
-        try:
-            model = genai.GenerativeModel("gemini-pro")
-            prompt = f"""
-            Give me exactly 3 trending hashtags (no explanation, no numbering) 
-            related to this topic: "{text}". 
-            Only output hashtags, each starting with #.
-            """
-            res = model.generate_content(prompt)
-            raw = res.text.strip()
-            hashtags = re.findall(r"#\w+", raw)[:3]
-        except:
-            hashtags = []
-
-    # fallback hashtags
-    if not hashtags:
-        hashtags = ["#Trending", "#Viral", "#News"]
-
-    hashtag_str = " ".join(hashtags)
-
-    # RETURN title + hashtags
-    return f"{base_title} {hashtag_str}"
+    words = re.findall(r"[A-Za-z0-9']+", text)
+    # drop common small stopwords at front
+    stop = {"the", "a", "an", "in", "on", "at", "by", "for", "to", "of"}
+    words = [w for w in words if w.lower() not in stop]
+    short_words = words[:3] if words else ["Hot", "News"]
+    short = " ".join(short_words)
+    emoji = random.choice(["🔥", "🎬", "⭐", "⚡", "📸", "🔔"])
+    return f"{short.strip()} {emoji}"
 
 
 # ---------------- News fetch ----------------
 def get_news_article():
-    url = f"https://newsapi.org/v2/top-headlines?category=entertainment&pageSize=5&apiKey={NEWS_API_KEY}"
+    if not NEWS_API_KEY:
+        raise RuntimeError("NEWS_API_KEY not set.")
+    url = f"https://newsapi.org/v2/top-headlines?category=entertainment&pageSize=6&apiKey={NEWS_API_KEY}"
     r = requests.get(url, timeout=15)
     data = safe_json(r)
 
@@ -119,9 +115,53 @@ def get_news_article():
         if not has_uploaded(title):
             description = art.get("description") or ""
             image_url = art.get("urlToImage")
-            return title, description, image_url
+            article_url = art.get("url")
+            # attempt to get an extra lead/detail from article page
+            lead = fetch_article_lead(article_url) if article_url else ""
+            # prefer lead if description is empty
+            if not description and lead:
+                description = lead
+            return title, description, image_url, article_url, lead
 
     raise RuntimeError("All today's articles already uploaded.")
+
+
+def fetch_article_lead(url):
+    """
+    Try to fetch a short informative lead sentence from the article page:
+    - look for og:description or meta description
+    - otherwise pick first reasonable <p> content
+    - return empty string on failure
+    """
+    if not url:
+        return ""
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 (compatible)"}
+        r = requests.get(url, headers=headers, timeout=8)
+        if r.status_code != 200 or not r.text:
+            return ""
+        html = r.text
+        # check og:description and meta description
+        m = re.search(r'<meta[^>]+property=["\']og:description["\'][^>]*content=["\']([^"\']+)["\']', html, re.I)
+        if not m:
+            m = re.search(r'<meta[^>]+name=["\']description["\'][^>]*content=["\']([^"\']+)["\']', html, re.I)
+        if m:
+            desc = re.sub(r'\s+', ' ', m.group(1)).strip()
+            # return first sentence
+            s = re.split(r'[.!?]', desc.strip())[0]
+            return s.strip()
+        # fallback: first meaningful <p> tag (strip HTML)
+        p = re.search(r'<p[^>]*>(.*?)</p>', html, re.I | re.S)
+        if p:
+            text = re.sub(r'<[^>]+>', '', p.group(1))
+            text = re.sub(r'\s+', ' ', text).strip()
+            # keep reasonable length
+            if len(text.split()) > 5:
+                s = re.split(r'[.!?]', text.strip())[0]
+                return s.strip()
+        return ""
+    except Exception:
+        return ""
 
 
 # ---------------- Background Image ----------------
@@ -131,12 +171,13 @@ def fetch_and_prepare_bg(image_url, fallback_query="entertainment"):
     if image_url:
         try:
             r = requests.get(image_url, timeout=15)
-            if r.status_code == 200:
+            if r.status_code == 200 and r.content:
                 raw_img = BytesIO(r.content)
-        except:
+        except Exception:
             pass
 
     if not raw_img:
+        # Unsplash fallback
         unsplash_url = f"https://source.unsplash.com/{VIDEO_W}x{VIDEO_H}/?{fallback_query}&sig={random.randint(1,999999)}"
         r = requests.get(unsplash_url, timeout=15)
         raw_img = BytesIO(r.content)
@@ -155,36 +196,142 @@ def fetch_and_prepare_bg(image_url, fallback_query="entertainment"):
     return str(out_path)
 
 
-# ---------------- Gemini Script Generator ----------------
-def generate_script(headline):
-    if not GEMINI_API_KEY:
-        return [
-            f"Fans react to {headline}!",
-            "The internet is exploding with opinions.",
-            "Some love it, some are shocked.",
-            "Rumors keep spreading fast.",
-            "What do YOU think?"
+# ---------------- Natural (non-AI template) Script Generator ----------------
+def _fallback_script_from_headline(headline, description="", lead=""):
+    """
+    Create a more 'human' 5-line mini-story using headline + description/lead.
+    The fallback uses the lead if available to strengthen factual coverage.
+    """
+    # Extract some candidates from headline
+    words = re.findall(r"[A-Za-z0-9']+", headline)
+    candidates = [w for w in words if len(w) > 3]
+    subj = candidates[0] if candidates else (headline.split()[0] if headline.split() else "This")
+
+    # Variation pools
+    hooks = [
+        f"Breaking: {headline}",
+        f"Quick update — {headline}",
+        f"Here's what's happening: {headline}",
+        f"Hot: {headline}",
+        f"Today: {headline}"
+    ]
+    explainers = [
+        "What happened: a new report or announcement changed the story.",
+        "Here's the key development you need to know.",
+        "Official sources and people close to the topic confirm the update.",
+        "This update adds an important new detail to the situation."
+    ]
+    details = []
+    if lead:
+        # Use the extracted lead as a detail (trim to short)
+        s = re.sub(r'\s+', ' ', lead).strip()
+        if len(s.split()) > 3:
+            details.append(s if len(s.split()) <= 18 else " ".join(s.split()[:18]) + "...")
+    if description:
+        # pull first sentence from description
+        ds = re.split(r'[.!?]', description.strip())[0]
+        ds = re.sub(r'\s+', ' ', ds).strip()
+        if ds and ds not in details:
+            details.append(ds if len(ds.split()) <= 18 else " ".join(ds.split()[:18]) + "...")
+
+    # If no details collected add generic context lines
+    if not details:
+        details = [
+            "Sources say the situation is evolving and more info is expected.",
+            "The timeline and impact are still being clarified."
         ]
 
-    prompt = f"""
-    Create a very short, punchy, gossip-style 5-line script for a YouTube Shorts video.
-    Format: 5 separate lines.
-    Topic: "{headline}"
+    context_impact = [
+        f"People online have been reacting strongly to the news about {subj}.",
+        "Industry voices and fans are already weighing in.",
+        "This could shape upcoming coverage for days to come."
+    ]
+    ctas = [
+        "What do you think? Drop your thoughts below.",
+        "Sound off in the comments — would you be surprised?",
+        "Follow for more updates as this develops."
+    ]
 
-    Requirements:
-    - Keep every line under 12 words.
-    - Super engaging, fast paced.
-    - No repeated phrases.
-    - Conversational gossip tone.
-    - DO NOT mention it's generated.
+    # Build five lines mixing sources and detail
+    line1 = random.choice(hooks)
+    line2 = random.choice(explainers)
+    # ensure we put one real detail line (prefer from 'details')
+    line3 = details[0]
+    line4 = random.choice(context_impact)
+    line5 = random.choice(ctas)
+
+    # Clean up & enforce length constraints
+    seq = [line1, line2, line3, line4, line5]
+    final = []
+    prev = None
+    for l in seq:
+        s = re.sub(r'\s+', ' ', l).strip()
+        if s != prev:
+            parts = s.split()
+            if len(parts) > 16:
+                s = " ".join(parts[:16]) + "..."
+            final.append(s)
+        prev = s
+    while len(final) < 5:
+        final.append(random.choice(ctas))
+    return final[:5]
+
+
+def generate_script(headline, description="", lead=""):
     """
+    Generate a 5-line script that reads like a human mini-story.
+    Uses Gemini if available; otherwise uses fallback enhanced with lead.
+    """
+    if genai and GEMINI_API_KEY:
+        try:
+            # prepare prompt with headline + description + lead (if present)
+            prompt = f"""
+Write a natural, human-sounding 5-line mini-story (short sentences) suitable for a YouTube Shorts voiceover.
+Topic headline:
+\"\"\"{headline}\"\"\"
 
-    model = genai.GenerativeModel("gemini-pro")
-    res = model.generate_content(prompt)
-    text = res.text.strip()
+Extra context (if any):
+\"\"\"{description or ''}\"\"\"
 
-    lines = [l.strip("-• ").strip() for l in text.split("\n") if l.strip()]
-    return lines[:5]
+Lead detail (if available):
+\"\"\"{lead or ''}\"\"\"
+
+Requirements:
+- Output exactly 5 lines, each on its own line (no numbering).
+- Make lines short and coherent so they together tell the whole mini-story.
+- Include one clear factual detail drawn from the extra context or lead.
+- Use varied sentence structure; avoid repetitive templates.
+- End with an engaging, human CTA (question or invite).
+- Keep each line roughly 6-14 words.
+"""
+            model = genai.GenerativeModel("gemini-pro")
+            res = model.generate_content(prompt)
+            text = (res.text or "").strip()
+            lines = [l.strip(" -•\t") for l in text.splitlines() if l.strip()]
+            if len(lines) >= 5:
+                out = []
+                for l in lines[:5]:
+                    s = re.sub(r'\s+', ' ', l).strip()
+                    parts = s.split()
+                    if len(parts) > 18:
+                        s = " ".join(parts[:18]) + "..."
+                    out.append(s)
+                # dedupe adjacent duplicates
+                final = []
+                prev = None
+                for l in out:
+                    if l != prev:
+                        final.append(l)
+                    prev = l
+                while len(final) < 5:
+                    final.append("What do you think about this?")
+                return final[:5]
+            else:
+                return _fallback_script_from_headline(headline, description, lead)
+        except Exception:
+            return _fallback_script_from_headline(headline, description, lead)
+    else:
+        return _fallback_script_from_headline(headline, description, lead)
 
 
 # ---------------- TTS ----------------
@@ -193,11 +340,14 @@ def create_tts_per_line(lines):
     durations = []
     for i, line in enumerate(lines):
         out = WORKDIR / f"tts_{i}.mp3"
-        tts = gTTS(text=line, lang="en")
+        # shorten overly long lines for TTS (but we already limited above)
+        safe_line = line.strip()
+        # create TTS
+        tts = gTTS(text=safe_line, lang="en")
         tts.save(str(out))
 
         audio = AudioFileClip(str(out))
-        dur = max(audio.duration, 1.1)
+        dur = max(audio.duration, 1.0)
         audio.close()
 
         tts_paths.append(str(out))
@@ -206,56 +356,110 @@ def create_tts_per_line(lines):
     return tts_paths, durations
 
 
-# ---------------- Captions ----------------
-def render_bottom_caption(text, index):
+# ---------------- Captions (optimized) ----------------
+def render_bottom_caption(text, index, h=CAPTION_HEIGHT, base_font_size=BASE_FONT_SIZE):
+    """
+    Renders a bottom caption with:
+    - automatic wrap
+    - dynamic font-size reduction to fit
+    - stroke/outline for readability
+    """
     try:
-        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 54)
-    except:
+        font_path = FONT_PATH or "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+        font = ImageFont.truetype(font_path, base_font_size)
+    except Exception:
         font = ImageFont.load_default()
 
-    img = Image.new("RGBA", (VIDEO_W, CAPTION_HEIGHT), (0, 0, 0, 0))
+    w = VIDEO_W
+    img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
+    band_margin = int(w * 0.03)
+    draw.rectangle([band_margin, 0, w - band_margin, h], fill=(0, 0, 0, 200))
 
-    draw.rectangle([20, 0, VIDEO_W-20, CAPTION_HEIGHT], fill=(0,0,0,190))
+    # trim very long inputs to a safety limit
+    text = re.sub(r'\s+', ' ', text).strip()[:MAX_CAPTION_CHARS]
 
-    tw, th = draw.textsize(text, font)
-    x = (VIDEO_W - tw) // 2
-    y = (CAPTION_HEIGHT - th) // 2
+    # try wrapping into lines that fit
+    # We'll decrease font size until text block fits comfortably
+    font_size = base_font_size
+    while font_size >= 26:
+        try:
+            font = ImageFont.truetype(FONT_PATH or "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
+        except Exception:
+            font = ImageFont.load_default()
+        words = text.split(" ")
+        lines = []
+        cur = ""
+        for wpart in words:
+            test = (cur + " " + wpart).strip() if cur else wpart
+            tw, th = draw.textsize(test, font=font)
+            if tw <= (VIDEO_W - 2 * (band_margin + 16)):
+                cur = test
+            else:
+                if cur:
+                    lines.append(cur)
+                cur = wpart
+        if cur:
+            lines.append(cur)
+        # estimate height
+        total_h = sum(draw.textsize(l, font=font)[1] for l in lines) + (len(lines) - 1) * 6
+        if total_h <= h - 16 and len(lines) <= 4:
+            break
+        font_size -= 4
 
-    draw.text((x, y), text, font=font, fill=(255,255,255,255))
+    # center lines vertically in band
+    y = (h - total_h) // 2 if total_h < h else 6
+    for ln in lines:
+        tw, th = draw.textsize(ln, font=font)
+        x = (VIDEO_W - tw) // 2
+        # stroke: draw shadow around text
+        for ox in (-1, 0, 1):
+            for oy in (-1, 0, 1):
+                draw.text((x + ox, y + oy), ln, font=font, fill=(0, 0, 0, 220))
+        draw.text((x, y), ln, font=font, fill=(255, 255, 255, 255))
+        y += th + 6
 
-    path = WORKDIR / f"cap_{index}.png"
-    img.save(path)
-    return str(path)
+    out = WORKDIR / f"cap_{index}.png"
+    img.save(out)
+    return str(out)
 
 
 # ---------------- Video Builder ----------------
 def build_final_video(bg_path, lines, tts_paths, durations, out_file):
-    total = sum(durations) + 2
+    total = sum(durations) + 2.0  # CTA gap
+    log(f"Rendering video, duration {total:.1f}s...")
 
     bg = ImageClip(bg_path).set_duration(total)
     bg = bg.fx(vfx.resize, lambda t: 1 + ZOOM_RATE * t)
     bg = bg.fx(vfx.fadein, 0.25).fx(vfx.fadeout, 0.25)
 
     caps = []
-    cursor = 0
+    cursor = 0.0
     for i, (line, d) in enumerate(zip(lines, durations)):
-        cap = ImageClip(render_bottom_caption(line, i)).set_duration(d)
-        cap = cap.set_start(cursor).set_position(("center", int(VIDEO_H * 0.78)))
+        cap_img = render_bottom_caption(line, i)
+        cap = ImageClip(cap_img).set_duration(d).set_start(cursor).set_position(("center", int(VIDEO_H * 0.78)))
         caps.append(cap)
         cursor += d
 
-    cta = ImageClip(render_bottom_caption("Follow for more 🔔", "cta")).set_duration(2)
+    # CTA final caption
+    cta = ImageClip(render_bottom_caption("Follow for more 🔔", "cta")).set_duration(2.0)
     cta = cta.set_start(cursor).set_position(("center", int(VIDEO_H * 0.78)))
     caps.append(cta)
 
     audio = concatenate_audioclips([AudioFileClip(p) for p in tts_paths])
     audio = audio.set_duration(total)
 
-    final = CompositeVideoClip([bg] + caps, size=(VIDEO_W, VIDEO_H))
+    final = CompositeVideoClip([bg] + caps, size=(VIDEO_W, VIDEO_H)).set_duration(total)
     final = final.set_audio(audio)
 
-    final.write_videofile(str(out_file), fps=FPS, codec="libx264", audio_codec="aac")
+    log("Writing video file (this can take several minutes)...")
+    final.write_videofile(str(out_file), fps=FPS, codec="libx264", audio_codec="aac", threads=4, preset="fast")
+
+    # cleanup audio objects
+    try:
+        audio.close()
+    except Exception:
+        pass
 
     return str(out_file)
 
@@ -277,9 +481,10 @@ def get_youtube_service():
 def upload_public(video_file, title, description):
     yt = get_youtube_service()
 
+    safe_title = re.sub(r"[^\x00-\x7F]+", "", title)[:100]
     body = {
         "snippet": {
-            "title": title,
+            "title": safe_title,
             "description": description,
             "tags": ["shorts", "entertainment", "gossip"]
         },
@@ -296,18 +501,23 @@ def upload_public(video_file, title, description):
     while resp is None:
         status, resp = req.next_chunk()
         if status:
-            log("Upload:", int(status.progress()*100), "%")
+            log("Upload:", int(status.progress() * 100), "%")
 
     return resp.get("id")
 
 
 # ---------------- MAIN ----------------
 def main():
-    title, desc, img_url = get_news_article()
+    log("Starting pipeline...")
+    title, desc, img_url, article_url, lead = get_news_article()
+    log("Article:", title)
+    if lead:
+        log("Extracted lead:", lead)
 
-    log("Generating script using Gemini...")
-    lines = generate_script(title)
+    log("Generating script (Gemini fallback safe) ...")
+    lines = generate_script(title, desc, lead)
 
+    # Build background image properly cropped
     bg = fetch_and_prepare_bg(img_url)
     tts_paths, durations = create_tts_per_line(lines)
 
@@ -315,7 +525,7 @@ def main():
     video_path = build_final_video(bg, lines, tts_paths, durations, out_video)
 
     yt_title = short_title_from_text(title)
-    yt_desc = desc or "Trending Entertainment Update"
+    yt_desc = desc or lead or "Trending Entertainment Update"
 
     upload_public(video_path, yt_title, yt_desc)
 
@@ -326,6 +536,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
