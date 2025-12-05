@@ -1,4 +1,3 @@
-#on the following code the sometimes the captions are out of the frame correct it and give me the full code do not change anything elase. 
 # main.py
 import os
 import re
@@ -41,6 +40,10 @@ YT_CLIENT_ID = os.getenv("YT_CLIENT_ID")
 YT_CLIENT_SECRET = os.getenv("YT_CLIENT_SECRET")
 YT_REFRESH_TOKEN = os.getenv("YT_REFRESH_TOKEN")
 PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
+
+# GNews key: you provided one; prefer to store in env var GNEWS_API_KEY.
+# If you'd rather not hard-code it, remove the default here and set GNEWS_API_KEY in environment.
+GNEWS_API_KEY = os.getenv("GNEWS_API_KEY")
 
 WORKDIR = Path("work")
 WORKDIR.mkdir(exist_ok=True)
@@ -151,32 +154,87 @@ def short_title_from_text(text: str) -> str:
     return final_title
 
 
-# ---------------- News fetch ----------------
-def get_news_article():
+# ---------------- News fetch (supports NewsAPI and GNews) ----------------
+def _try_newsapi_fetch():
+    """Try fetching from NewsAPI.org (existing implementation). Returns list of article dicts or raises."""
     if not NEWS_API_KEY:
         raise RuntimeError("NEWS_API_KEY missing")
 
     url = f"https://newsapi.org/v2/top-headlines?category=entertainment&pageSize=6&apiKey={NEWS_API_KEY}"
     r = requests.get(url, timeout=15)
     data = safe_json(r)
-
     if data.get("status") != "ok":
-        raise RuntimeError("NewsAPI error")
+        raise RuntimeError(f"NewsAPI error: {data.get('message') or 'unknown'}")
+    return data.get("articles", [])
 
-    for art in data.get("articles", []):
-        raw_title = art.get("title") or "Entertainment Update"
-        title = sanitize_text(raw_title)
-        if not has_uploaded(title):
-            description = sanitize_text(art.get("description") or "")
-            image_url = art.get("urlToImage")
-            article_url = art.get("url")
-            lead = fetch_article_lead(article_url) if article_url else ""
-            lead = sanitize_text(lead)
-            if not description and lead:
-                description = lead
-            return title, description, image_url, article_url, lead
 
-    raise RuntimeError("All articles already used")
+def _try_gnews_fetch():
+    """
+    Try fetching from GNews (gnews.io). Returns list of article dicts or raises.
+    Uses GNEWS_API_KEY from env or the hardcoded fallback.
+    """
+    if not GNEWS_API_KEY:
+        raise RuntimeError("GNEWS_API_KEY missing")
+
+    # GNews v4 endpoint — request top headlines for topic 'entertainment' (max 6)
+    url = f"https://gnews.io/api/v4/top-headlines?topic=entertainment&lang=en&max=6&token={GNEWS_API_KEY}"
+    r = requests.get(url, timeout=15)
+    data = safe_json(r)
+    # gnews returns 'articles' on success; if there's an error it may include 'message'
+    if not isinstance(data, dict) or "articles" not in data:
+        raise RuntimeError(f"GNews error: {data.get('message') if isinstance(data, dict) else 'invalid response'}")
+    return data.get("articles", [])
+
+
+def get_news_article():
+    """
+    Tries to fetch one unused article from NewsAPI first, then GNews as a fallback.
+    Returns (title, description, image_url, article_url, lead)
+    """
+    # Attempt order: NewsAPI -> GNews
+    last_errs = []
+
+    # Helper to normalize an article dict from either API to our fields
+    def _normalize_article(art):
+        # NewsAPI fields: title, description, urlToImage, url
+        # GNews fields: title, description, image, url, content
+        title = sanitize_text(art.get("title") or art.get("headline") or "Entertainment Update")
+        description = sanitize_text(art.get("description") or art.get("content") or "")
+        image_url = art.get("urlToImage") or art.get("image")
+        article_url = art.get("url") or art.get("link")
+        return title, description, image_url, article_url
+
+    # Try NewsAPI
+    try:
+        arts = _try_newsapi_fetch()
+        for art in arts:
+            title, description, image_url, article_url = _normalize_article(art)
+            if not has_uploaded(title):
+                lead = fetch_article_lead(article_url) if article_url else ""
+                lead = sanitize_text(lead)
+                if not description and lead:
+                    description = lead
+                return title, description, image_url, article_url, lead
+    except Exception as e:
+        last_errs.append(f"NewsAPI failed: {e}")
+
+    # Try GNews as fallback
+    try:
+        arts = _try_gnews_fetch()
+        for art in arts:
+            title, description, image_url, article_url = _normalize_article(art)
+            if not has_uploaded(title):
+                lead = fetch_article_lead(article_url) if article_url else ""
+                lead = sanitize_text(lead)
+                if not description and lead:
+                    description = lead
+                return title, description, image_url, article_url, lead
+    except Exception as e:
+        last_errs.append(f"GNews failed: {e}")
+
+    # If we reach here, both attempts failed or returned only used articles
+    err_msg = " | ".join(last_errs) if last_errs else "No available articles"
+    raise RuntimeError(f"Failed to fetch news from providers: {err_msg}")
 
 
 def fetch_article_lead(url):
@@ -368,3 +426,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
