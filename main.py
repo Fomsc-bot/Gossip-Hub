@@ -41,8 +41,6 @@ YT_CLIENT_SECRET = os.getenv("YT_CLIENT_SECRET")
 YT_REFRESH_TOKEN = os.getenv("YT_REFRESH_TOKEN")
 PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
 
-# GNews key: you provided one; prefer to store in env var GNEWS_API_KEY.
-# If you'd rather not hard-code it, remove the default here and set GNEWS_API_KEY in environment.
 GNEWS_API_KEY = os.getenv("GNEWS_API_KEY")
 
 WORKDIR = Path("work")
@@ -66,35 +64,24 @@ def log(*a):
 
 # ---------------- FIXED sanitize_text() ----------------
 def sanitize_text(s: str) -> str:
-    """
-    Fixed version — ALL re.sub() calls now include the required 'string' argument.
-    Prevents the missing-argument TypeError that you got before.
-    """
     if not s:
         return ""
 
-    # HTML decode
     s = html.unescape(s)
 
-    # Fix "Hash 039" → '
     s = re.sub(r'\bHash\s*0*39\b', "'", s, flags=re.I)
     s = re.sub(r'\bHash\s*#?\d+\b', " ", s, flags=re.I)
     s = re.sub(r'\bNo\.?\s*0*39\b', "'", s, flags=re.I)
     s = re.sub(r'\bNo\.?\s*\d+\b', " ", s, flags=re.I)
 
-    # Convert &#039; → '
     s = re.sub(r'&[#A-Za-z0-9]+;?', lambda m: html.unescape(m.group(0)), s)
 
-    # Remove control characters
     s = re.sub(r'[\x00-\x1f\x7f-\x9f]', "", s)
 
-    # Fix spacing before punctuation
     s = re.sub(r'\s+([,.\-:;!?])', r'\1', s)
 
-    # Normalize whitespace
     s = re.sub(r'\s+', ' ', s).strip()
 
-    # Remove extra quotes at ends
     s = s.strip(" \t\n\"'")
 
     return s
@@ -134,29 +121,18 @@ def short_title_from_text(text: str) -> str:
 
     emoji = random.choice(["🔥", "🎬", "⭐", "⚡", "📸", "🔔"])
 
-    hashtags = []
-    if genai and GEMINI_API_KEY:
-        try:
-            model = genai.GenerativeModel("gemini-pro")
-            prompt = f"Give 3 hashtags for: {text}. Output only hashtags."
-            res = model.generate_content(prompt)
-            raw = (res.text or "").strip()
-            hashtags = re.findall(r"#\w+", raw)[:3]
-        except Exception:
-            pass
-
-    if not hashtags:
-        hs = [w.lower() for w in short_words][:3]
-        hashtags = [f"#{re.sub(r'[^A-Za-z0-9]', '', x)}" for x in hs]
+    # ---------------------------------------------------
+    #  FIXED — Use YOUR hashtags ONLY
+    # ---------------------------------------------------
+    hashtags = ["#shorts", "#News", "#gossip"]
 
     final_title = f"{short} {emoji} {' '.join(hashtags)}"
     final_title = re.sub(r"[^\x00-\x7F]+", "", final_title)[:120]
     return final_title
 
 
-# ---------------- News fetch (supports NewsAPI and GNews) ----------------
+# ---------------- News fetch ----------------
 def _try_newsapi_fetch():
-    """Try fetching from NewsAPI.org (existing implementation). Returns list of article dicts or raises."""
     if not NEWS_API_KEY:
         raise RuntimeError("NEWS_API_KEY missing")
 
@@ -169,42 +145,27 @@ def _try_newsapi_fetch():
 
 
 def _try_gnews_fetch():
-    """
-    Try fetching from GNews (gnews.io). Returns list of article dicts or raises.
-    Uses GNEWS_API_KEY from env or the hardcoded fallback.
-    """
     if not GNEWS_API_KEY:
         raise RuntimeError("GNEWS_API_KEY missing")
 
-    # GNews v4 endpoint — request top headlines for topic 'entertainment' (max 6)
     url = f"https://gnews.io/api/v4/top-headlines?topic=entertainment&lang=en&max=6&token={GNEWS_API_KEY}"
     r = requests.get(url, timeout=15)
     data = safe_json(r)
-    # gnews returns 'articles' on success; if there's an error it may include 'message'
     if not isinstance(data, dict) or "articles" not in data:
         raise RuntimeError(f"GNews error: {data.get('message') if isinstance(data, dict) else 'invalid response'}")
     return data.get("articles", [])
 
 
 def get_news_article():
-    """
-    Tries to fetch one unused article from NewsAPI first, then GNews as a fallback.
-    Returns (title, description, image_url, article_url, lead)
-    """
-    # Attempt order: NewsAPI -> GNews
     last_errs = []
 
-    # Helper to normalize an article dict from either API to our fields
     def _normalize_article(art):
-        # NewsAPI fields: title, description, urlToImage, url
-        # GNews fields: title, description, image, url, content
         title = sanitize_text(art.get("title") or art.get("headline") or "Entertainment Update")
         description = sanitize_text(art.get("description") or art.get("content") or "")
         image_url = art.get("urlToImage") or art.get("image")
         article_url = art.get("url") or art.get("link")
         return title, description, image_url, article_url
 
-    # Try NewsAPI
     try:
         arts = _try_newsapi_fetch()
         for art in arts:
@@ -218,7 +179,6 @@ def get_news_article():
     except Exception as e:
         last_errs.append(f"NewsAPI failed: {e}")
 
-    # Try GNews as fallback
     try:
         arts = _try_gnews_fetch()
         for art in arts:
@@ -232,9 +192,7 @@ def get_news_article():
     except Exception as e:
         last_errs.append(f"GNews failed: {e}")
 
-    # If we reach here, both attempts failed or returned only used articles
-    err_msg = " | ".join(last_errs) if last_errs else "No available articles"
-    raise RuntimeError(f"Failed to fetch news from providers: {err_msg}")
+    raise RuntimeError("Failed to fetch news")
 
 
 def fetch_article_lead(url):
@@ -291,7 +249,6 @@ def fetch_and_prepare_bg(image_url, fallback_query="entertainment"):
 
 # ---------------- Script generator ----------------
 def generate_script(headline, description="", lead=""):
-    # Fallback only — to keep code shorter
     return [
         headline,
         "Here’s the latest update on this story.",
@@ -426,4 +383,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
