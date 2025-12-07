@@ -8,6 +8,9 @@ on:
     # 6:00 PM Sri Lanka time -> 12:30 UTC
     - cron: '30 12 * * *'
 
+    # Added: 10:00 AM U.S. Eastern Time -> 15:00 UTC
+    - cron: '00 15 * * *'
+
   workflow_dispatch:
 
 jobs:
@@ -36,4 +39,3 @@ jobs:
           NUM_IMAGES: '5'
         run: |
           python main.py
-
