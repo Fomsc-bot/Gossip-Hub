@@ -44,7 +44,6 @@ def log(*a):
     print("[BOT]", *a)
 
 
-# ---------------- Text Helpers ----------------
 def sanitize_text(s):
     if not s:
         return ""
@@ -169,7 +168,12 @@ def render_caption(text, idx):
     safe_text = ascii_only(text)
     img = Image.new("RGBA", (VIDEO_W, CAPTION_HEIGHT), (0, 0, 0, 200))
     draw = ImageDraw.Draw(img)
-    font = ImageFont.load_default()
+    # Use larger font
+    font_size = int(CAPTION_HEIGHT * 0.5)
+    try:
+        font = ImageFont.truetype("arial.ttf", font_size)
+    except:
+        font = ImageFont.load_default()
     w, h = draw.textsize(safe_text, font)
     draw.text(
         ((VIDEO_W - w)//2, (CAPTION_HEIGHT - h)//2),
@@ -224,6 +228,7 @@ def upload_youtube(video, title, desc):
 
 def upload_facebook(video, title, desc):
     if not FB_PAGE_ID or not FB_PAGE_TOKEN:
+        log("Facebook credentials missing, skipping upload")
         return
     r = requests.post(
         f"https://graph.facebook.com/v24.0/{FB_PAGE_ID}/videos",
@@ -236,7 +241,7 @@ def upload_facebook(video, title, desc):
         timeout=300
     )
     if r.status_code != 200:
-        raise RuntimeError(r.text)
+        raise RuntimeError(f"Facebook upload failed: {r.text}")
     log("Uploaded to Facebook")
 
 
