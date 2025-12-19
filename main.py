@@ -124,7 +124,7 @@ def fetch_and_prepare_bg(image_url):
     img = img.resize((VIDEO_W, VIDEO_H))
     out = WORKDIR / "bg.jpg"
     img.save(out)
-    return str(out)
+    return str(out)  # convert Path to string
 
 
 # ---------------- Script ----------------
@@ -142,7 +142,7 @@ def create_tts(lines):
     paths, durs = [], []
     for i, line in enumerate(lines):
         path = WORKDIR / f"tts_{i}.mp3"
-        gTTS(line).save(path)
+        gTTS(line).save(str(path))  # convert Path to string
         audio = AudioFileClip(str(path))
         durs.append(max(audio.duration, 1))
         audio.close()
@@ -165,7 +165,7 @@ def render_caption(text, idx):
     )
     out = WORKDIR / f"cap_{idx}.png"
     img.save(out)
-    return str(out)
+    return str(out)  # convert Path to string
 
 
 # ---------------- Video ----------------
@@ -184,7 +184,7 @@ def build_video(bg, lines, tts, durs):
     final = CompositeVideoClip([bg_clip] + clips).set_audio(audio)
 
     out = WORKDIR / "final.mp4"
-    final.write_videofile(out, fps=FPS, codec="libx264", audio_codec="aac")
+    final.write_videofile(str(out), fps=FPS, codec="libx264", audio_codec="aac")  # convert Path to string
     return str(out)
 
 
