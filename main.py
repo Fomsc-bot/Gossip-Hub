@@ -44,13 +44,18 @@ def log(*a):
     print("[BOT]", *a)
 
 
-# ---------------- Helpers ----------------
+# ---------------- Text Helpers ----------------
 def sanitize_text(s):
     if not s:
         return ""
     s = html.unescape(s)
     s = re.sub(r'[\x00-\x1f\x7f-\x9f]', "", s)
     return re.sub(r'\s+', ' ', s).strip(" \"'")
+
+
+def ascii_only(s: str) -> str:
+    """Remove emojis & non-ascii for Pillow safety"""
+    return s.encode("ascii", "ignore").decode()
 
 
 def has_uploaded(title):
@@ -64,7 +69,7 @@ def save_uploaded(title):
         f.write(title + "\n")
 
 
-# ---------------- News (with fallback) ----------------
+# ---------------- News (fallback) ----------------
 def get_news_article():
     try:
         if GNEWS_API_KEY:
@@ -97,20 +102,18 @@ def get_news_article():
     raise RuntimeError("No new articles found")
 
 
-# ---------------- SAFE BG IMAGE (FIXED) ----------------
+# ---------------- SAFE BG IMAGE ----------------
 def fetch_and_prepare_bg(image_url):
     img = None
 
-    # Try article image first
     if image_url:
         try:
             r = requests.get(image_url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
             if r.status_code == 200 and "image" in r.headers.get("Content-Type", ""):
                 img = Image.open(BytesIO(r.content)).convert("RGB")
         except (UnidentifiedImageError, OSError):
-            log("Invalid article image — falling back")
+            log("Invalid article image — fallback")
 
-    # Fallback: Unsplash (always works)
     if img is None:
         r = requests.get(
             f"https://source.unsplash.com/{VIDEO_W}x{VIDEO_H}/entertainment",
@@ -147,13 +150,19 @@ def create_tts(lines):
     return paths, durs
 
 
-# ---------------- Captions ----------------
+# ---------------- Captions (FIXED) ----------------
 def render_caption(text, idx):
+    safe_text = ascii_only(text)  # 🔑 FIX
     img = Image.new("RGBA", (VIDEO_W, CAPTION_HEIGHT), (0, 0, 0, 200))
     draw = ImageDraw.Draw(img)
     font = ImageFont.load_default()
-    w, h = draw.textsize(text, font)
-    draw.text(((VIDEO_W - w)//2, (CAPTION_HEIGHT - h)//2), text, fill="white", font=font)
+    w, h = draw.textsize(safe_text, font)
+    draw.text(
+        ((VIDEO_W - w)//2, (CAPTION_HEIGHT - h)//2),
+        safe_text,
+        fill="white",
+        font=font
+    )
     out = WORKDIR / f"cap_{idx}.png"
     img.save(out)
     return str(out)
@@ -222,6 +231,7 @@ def main():
     log("Starting...")
     title, desc, img = get_news_article()
     lines = generate_script(title, desc)
+
     bg = fetch_and_prepare_bg(img)
     tts, durs = create_tts(lines)
     video = build_video(bg, lines, tts, durs)
