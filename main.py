@@ -71,19 +71,49 @@ def save_uploaded(title):
         f.write(title + "\n")
 
 
-# ---------------- News ----------------
+# ---------------- News (WITH FALLBACK) ----------------
 def get_news_article():
-    url = f"https://gnews.io/api/v4/top-headlines?topic=entertainment&lang=en&max=5&token={GNEWS_API_KEY}"
-    data = requests.get(url, timeout=15).json()
-    for art in data.get("articles", []):
-        title = sanitize_text(art["title"])
-        if not has_uploaded(title):
-            return (
-                title,
-                sanitize_text(art.get("description", "")),
-                art.get("image"),
+    # ---- First: GNews ----
+    try:
+        if GNEWS_API_KEY:
+            url = (
+                "https://gnews.io/api/v4/top-headlines"
+                f"?topic=entertainment&lang=en&max=10&token={GNEWS_API_KEY}"
             )
-    raise RuntimeError("No new articles")
+            data = requests.get(url, timeout=15).json()
+            for art in data.get("articles", []):
+                title = sanitize_text(art.get("title"))
+                if title and not has_uploaded(title):
+                    return (
+                        title,
+                        sanitize_text(art.get("description", "")),
+                        art.get("image"),
+                    )
+            log("No new articles from GNews, trying NewsAPI...")
+    except Exception as e:
+        log("GNews failed:", e)
+
+    # ---- Second: NewsAPI ----
+    try:
+        if NEWS_API_KEY:
+            url = (
+                "https://newsapi.org/v2/top-headlines"
+                f"?category=entertainment&pageSize=10&apiKey={NEWS_API_KEY}"
+            )
+            data = requests.get(url, timeout=15).json()
+            for art in data.get("articles", []):
+                title = sanitize_text(art.get("title"))
+                if title and not has_uploaded(title):
+                    return (
+                        title,
+                        sanitize_text(art.get("description", "")),
+                        art.get("urlToImage"),
+                    )
+            log("No new articles from NewsAPI either.")
+    except Exception as e:
+        log("NewsAPI failed:", e)
+
+    raise RuntimeError("No new articles found from any source")
 
 
 # ---------------- BG Image ----------------
@@ -130,7 +160,12 @@ def render_caption(text, idx):
     draw = ImageDraw.Draw(img)
     font = ImageFont.load_default()
     w, h = draw.textsize(text, font)
-    draw.text(((VIDEO_W - w)//2, (CAPTION_HEIGHT - h)//2), text, fill="white", font=font)
+    draw.text(
+        ((VIDEO_W - w) // 2, (CAPTION_HEIGHT - h) // 2),
+        text,
+        fill="white",
+        font=font
+    )
     out = WORKDIR / f"cap_{idx}.png"
     img.save(out)
     return str(out)
@@ -138,16 +173,18 @@ def render_caption(text, idx):
 
 # ---------------- Video ----------------
 def build_video(bg, lines, tts, durs):
-    bg_clip = ImageClip(bg).set_duration(sum(durs)+1).fx(vfx.resize, lambda t: 1+ZOOM_RATE*t)
+    bg_clip = ImageClip(bg).set_duration(sum(durs) + 1)
+    bg_clip = bg_clip.fx(vfx.resize, lambda t: 1 + ZOOM_RATE * t)
+
     clips, t = [], 0
     for i, (line, dur) in enumerate(zip(lines, durs)):
         cap = ImageClip(render_caption(line, i)).set_start(t).set_duration(dur)
-        cap = cap.set_position(("center", VIDEO_H*0.78))
+        cap = cap.set_position(("center", VIDEO_H * 0.78))
         clips.append(cap)
         t += dur
 
     audio = concatenate_audioclips([AudioFileClip(p) for p in tts])
-    final = CompositeVideoClip([bg_clip]+clips).set_audio(audio)
+    final = CompositeVideoClip([bg_clip] + clips).set_audio(audio)
 
     out = WORKDIR / "final.mp4"
     final.write_videofile(out, fps=FPS, codec="libx264", audio_codec="aac")
@@ -157,7 +194,8 @@ def build_video(bg, lines, tts, durs):
 # ---------------- YouTube Upload ----------------
 def upload_youtube(video, title, desc):
     creds = Credentials(
-        None, refresh_token=YT_REFRESH_TOKEN,
+        None,
+        refresh_token=YT_REFRESH_TOKEN,
         client_id=YT_CLIENT_ID,
         client_secret=YT_CLIENT_SECRET,
         token_uri="https://oauth2.googleapis.com/token"
@@ -165,8 +203,16 @@ def upload_youtube(video, title, desc):
     creds.refresh(Request())
     yt = build("youtube", "v3", credentials=creds)
 
-    body = {"snippet": {"title": title, "description": desc}, "status": {"privacyStatus": "public"}}
-    req = yt.videos().insert(part="snippet,status", body=body, media_body=MediaFileUpload(video))
+    body = {
+        "snippet": {"title": title, "description": desc},
+        "status": {"privacyStatus": "public"}
+    }
+
+    req = yt.videos().insert(
+        part="snippet,status",
+        body=body,
+        media_body=MediaFileUpload(video)
+    )
     req.execute()
     log("Uploaded to YouTube")
 
