@@ -54,7 +54,6 @@ def sanitize_text(s):
 
 
 def ascii_only(s: str) -> str:
-    """Remove emojis & non-ascii for Pillow safety"""
     return s.encode("ascii", "ignore").decode()
 
 
@@ -69,7 +68,7 @@ def save_uploaded(title):
         f.write(title + "\n")
 
 
-# ---------------- News (fallback) ----------------
+# ---------------- News ----------------
 def get_news_article():
     try:
         if GNEWS_API_KEY:
@@ -105,7 +104,6 @@ def get_news_article():
 # ---------------- SAFE BG IMAGE ----------------
 def fetch_and_prepare_bg(image_url):
     img = None
-
     if image_url:
         try:
             r = requests.get(image_url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
@@ -121,10 +119,26 @@ def fetch_and_prepare_bg(image_url):
         )
         img = Image.open(BytesIO(r.content)).convert("RGB")
 
-    img = img.resize((VIDEO_W, VIDEO_H))
+    # Maintain aspect ratio and center-crop
+    img_ratio = img.width / img.height
+    video_ratio = VIDEO_W / VIDEO_H
+
+    if img_ratio > video_ratio:
+        new_height = VIDEO_H
+        new_width = int(img_ratio * new_height)
+    else:
+        new_width = VIDEO_W
+        new_height = int(new_width / img_ratio)
+
+    img = img.resize((new_width, new_height), Image.LANCZOS)
+
+    left = (new_width - VIDEO_W)//2
+    top = (new_height - VIDEO_H)//2
+    img = img.crop((left, top, left + VIDEO_W, top + VIDEO_H))
+
     out = WORKDIR / "bg.jpg"
     img.save(out)
-    return str(out)  # convert Path to string
+    return str(out)
 
 
 # ---------------- Script ----------------
@@ -142,7 +156,7 @@ def create_tts(lines):
     paths, durs = [], []
     for i, line in enumerate(lines):
         path = WORKDIR / f"tts_{i}.mp3"
-        gTTS(line).save(str(path))  # convert Path to string
+        gTTS(line).save(str(path))
         audio = AudioFileClip(str(path))
         durs.append(max(audio.duration, 1))
         audio.close()
@@ -150,9 +164,9 @@ def create_tts(lines):
     return paths, durs
 
 
-# ---------------- Captions (FIXED) ----------------
+# ---------------- Captions ----------------
 def render_caption(text, idx):
-    safe_text = ascii_only(text)  # 🔑 FIX
+    safe_text = ascii_only(text)
     img = Image.new("RGBA", (VIDEO_W, CAPTION_HEIGHT), (0, 0, 0, 200))
     draw = ImageDraw.Draw(img)
     font = ImageFont.load_default()
@@ -165,7 +179,7 @@ def render_caption(text, idx):
     )
     out = WORKDIR / f"cap_{idx}.png"
     img.save(out)
-    return str(out)  # convert Path to string
+    return str(out)
 
 
 # ---------------- Video ----------------
@@ -184,7 +198,7 @@ def build_video(bg, lines, tts, durs):
     final = CompositeVideoClip([bg_clip] + clips).set_audio(audio)
 
     out = WORKDIR / "final.mp4"
-    final.write_videofile(str(out), fps=FPS, codec="libx264", audio_codec="aac")  # convert Path to string
+    final.write_videofile(str(out), fps=FPS, codec="libx264", audio_codec="aac")
     return str(out)
 
 
