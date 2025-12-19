@@ -1,4 +1,3 @@
-# main.py
 import os
 import re
 import requests
@@ -44,6 +43,7 @@ def log(*a):
     print("[BOT]", *a)
 
 
+# ---------------- Text Helpers ----------------
 def sanitize_text(s):
     if not s:
         return ""
@@ -71,10 +71,7 @@ def save_uploaded(title):
 def get_news_article():
     try:
         if GNEWS_API_KEY:
-            url = (
-                "https://gnews.io/api/v4/top-headlines"
-                f"?topic=entertainment&lang=en&max=10&token={GNEWS_API_KEY}"
-            )
+            url = f"https://gnews.io/api/v4/top-headlines?topic=entertainment&lang=en&max=10&token={GNEWS_API_KEY}"
             data = requests.get(url, timeout=15).json()
             for art in data.get("articles", []):
                 title = sanitize_text(art.get("title"))
@@ -85,10 +82,7 @@ def get_news_article():
 
     try:
         if NEWS_API_KEY:
-            url = (
-                "https://newsapi.org/v2/top-headlines"
-                f"?category=entertainment&pageSize=10&apiKey={NEWS_API_KEY}"
-            )
+            url = f"https://newsapi.org/v2/top-headlines?category=entertainment&pageSize=10&apiKey={NEWS_API_KEY}"
             data = requests.get(url, timeout=15).json()
             for art in data.get("articles", []):
                 title = sanitize_text(art.get("title"))
@@ -112,10 +106,7 @@ def fetch_and_prepare_bg(image_url):
             log("Invalid article image — fallback")
 
     if img is None:
-        r = requests.get(
-            f"https://source.unsplash.com/{VIDEO_W}x{VIDEO_H}/entertainment",
-            timeout=15
-        )
+        r = requests.get(f"https://source.unsplash.com/{VIDEO_W}x{VIDEO_H}/entertainment", timeout=15)
         img = Image.open(BytesIO(r.content)).convert("RGB")
 
     # Maintain aspect ratio and center-crop
@@ -130,9 +121,8 @@ def fetch_and_prepare_bg(image_url):
         new_height = int(new_width / img_ratio)
 
     img = img.resize((new_width, new_height), Image.LANCZOS)
-
-    left = (new_width - VIDEO_W)//2
-    top = (new_height - VIDEO_H)//2
+    left = (new_width - VIDEO_W) // 2
+    top = (new_height - VIDEO_H) // 2
     img = img.crop((left, top, left + VIDEO_W, top + VIDEO_H))
 
     out = WORKDIR / "bg.jpg"
@@ -168,19 +158,36 @@ def render_caption(text, idx):
     safe_text = ascii_only(text)
     img = Image.new("RGBA", (VIDEO_W, CAPTION_HEIGHT), (0, 0, 0, 200))
     draw = ImageDraw.Draw(img)
+
     # Use larger font
     font_size = int(CAPTION_HEIGHT * 0.5)
     try:
         font = ImageFont.truetype("arial.ttf", font_size)
     except:
         font = ImageFont.load_default()
-    w, h = draw.textsize(safe_text, font)
-    draw.text(
-        ((VIDEO_W - w)//2, (CAPTION_HEIGHT - h)//2),
-        safe_text,
-        fill="white",
-        font=font
-    )
+
+    # Wrap text if too long
+    max_width = VIDEO_W - 40
+    lines = []
+    words = safe_text.split()
+    current_line = ""
+    for word in words:
+        test_line = current_line + " " + word if current_line else word
+        w, _ = draw.textsize(test_line, font)
+        if w <= max_width:
+            current_line = test_line
+        else:
+            lines.append(current_line)
+            current_line = word
+    if current_line:
+        lines.append(current_line)
+
+    y = (CAPTION_HEIGHT - len(lines) * font_size) // 2
+    for line in lines:
+        w, h = draw.textsize(line, font)
+        draw.text(((VIDEO_W - w) // 2, y), line, fill="white", font=font)
+        y += font_size
+
     out = WORKDIR / f"cap_{idx}.png"
     img.save(out)
     return str(out)
@@ -188,13 +195,13 @@ def render_caption(text, idx):
 
 # ---------------- Video ----------------
 def build_video(bg, lines, tts, durs):
-    bg_clip = ImageClip(bg).set_duration(sum(durs)+1)
+    bg_clip = ImageClip(bg).set_duration(sum(durs) + 1)
     bg_clip = bg_clip.fx(vfx.resize, lambda t: 1 + ZOOM_RATE * t)
 
     clips, t = [], 0
     for i, dur in enumerate(durs):
         cap = ImageClip(render_caption(lines[i], i)).set_start(t).set_duration(dur)
-        cap = cap.set_position(("center", VIDEO_H*0.78))
+        cap = cap.set_position(("center", VIDEO_H * 0.78))
         clips.append(cap)
         t += dur
 
@@ -230,17 +237,20 @@ def upload_facebook(video, title, desc):
     if not FB_PAGE_ID or not FB_PAGE_TOKEN:
         log("Facebook credentials missing, skipping upload")
         return
-    r = requests.post(
-        f"https://graph.facebook.com/v24.0/{FB_PAGE_ID}/videos",
-        files={"source": open(video, "rb")},
-        data={
-            "access_token": FB_PAGE_TOKEN,
-            "title": title,
-            "description": f"{desc}\n\n#GossipHub #Entertainment #News"
-        },
-        timeout=300
-    )
+    with open(video, "rb") as f:
+        r = requests.post(
+            f"https://graph.facebook.com/v24.0/{FB_PAGE_ID}/videos",
+            files={"source": f},
+            data={
+                "access_token": FB_PAGE_TOKEN,
+                "title": title,
+                "description": f"{desc}\n\n#GossipHub #Entertainment #News"
+            },
+            timeout=300
+        )
+
     if r.status_code != 200:
+        log(f"Facebook upload failed: {r.status_code} {r.text}")
         raise RuntimeError(f"Facebook upload failed: {r.text}")
     log("Uploaded to Facebook")
 
