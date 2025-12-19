@@ -1,15 +1,13 @@
 # main.py
 import os
 import re
-import time
-import random
 import requests
 import html
 from pathlib import Path
 from io import BytesIO
 
 from gtts import gTTS
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, UnidentifiedImageError
 
 from moviepy.editor import (
     ImageClip, AudioFileClip, CompositeVideoClip,
@@ -24,7 +22,6 @@ from google.auth.transport.requests import Request
 # ---------------- CONFIG ----------------
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 GNEWS_API_KEY = os.getenv("GNEWS_API_KEY")
-PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
 
 YT_CLIENT_ID = os.getenv("YT_CLIENT_ID")
 YT_CLIENT_SECRET = os.getenv("YT_CLIENT_SECRET")
@@ -41,25 +38,21 @@ VIDEO_W, VIDEO_H = 1080, 1920
 CAPTION_HEIGHT = int(VIDEO_H * 0.16)
 FPS = 24
 ZOOM_RATE = 0.015
-BASE_FONT_SIZE = 56
-MAX_CAPTION_CHARS = 220
 
 
 def log(*a):
     print("[BOT]", *a)
 
 
-# ---------------- Text Helpers ----------------
-def sanitize_text(s: str) -> str:
+# ---------------- Helpers ----------------
+def sanitize_text(s):
     if not s:
         return ""
     s = html.unescape(s)
     s = re.sub(r'[\x00-\x1f\x7f-\x9f]', "", s)
-    s = re.sub(r'\s+', ' ', s).strip()
-    return s.strip(" \"'")
+    return re.sub(r'\s+', ' ', s).strip(" \"'")
 
 
-# ---------------- Duplicate Filter ----------------
 def has_uploaded(title):
     if not LAST_FILE.exists():
         return False
@@ -71,9 +64,8 @@ def save_uploaded(title):
         f.write(title + "\n")
 
 
-# ---------------- News (WITH FALLBACK) ----------------
+# ---------------- News (with fallback) ----------------
 def get_news_article():
-    # ---- First: GNews ----
     try:
         if GNEWS_API_KEY:
             url = (
@@ -84,16 +76,10 @@ def get_news_article():
             for art in data.get("articles", []):
                 title = sanitize_text(art.get("title"))
                 if title and not has_uploaded(title):
-                    return (
-                        title,
-                        sanitize_text(art.get("description", "")),
-                        art.get("image"),
-                    )
-            log("No new articles from GNews, trying NewsAPI...")
+                    return title, sanitize_text(art.get("description")), art.get("image")
     except Exception as e:
         log("GNews failed:", e)
 
-    # ---- Second: NewsAPI ----
     try:
         if NEWS_API_KEY:
             url = (
@@ -104,26 +90,33 @@ def get_news_article():
             for art in data.get("articles", []):
                 title = sanitize_text(art.get("title"))
                 if title and not has_uploaded(title):
-                    return (
-                        title,
-                        sanitize_text(art.get("description", "")),
-                        art.get("urlToImage"),
-                    )
-            log("No new articles from NewsAPI either.")
+                    return title, sanitize_text(art.get("description")), art.get("urlToImage")
     except Exception as e:
         log("NewsAPI failed:", e)
 
-    raise RuntimeError("No new articles found from any source")
+    raise RuntimeError("No new articles found")
 
 
-# ---------------- BG Image ----------------
+# ---------------- SAFE BG IMAGE (FIXED) ----------------
 def fetch_and_prepare_bg(image_url):
+    img = None
+
+    # Try article image first
     if image_url:
-        img = Image.open(BytesIO(requests.get(image_url).content)).convert("RGB")
-    else:
-        img = Image.open(BytesIO(
-            requests.get(f"https://source.unsplash.com/{VIDEO_W}x{VIDEO_H}/entertainment").content
-        )).convert("RGB")
+        try:
+            r = requests.get(image_url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+            if r.status_code == 200 and "image" in r.headers.get("Content-Type", ""):
+                img = Image.open(BytesIO(r.content)).convert("RGB")
+        except (UnidentifiedImageError, OSError):
+            log("Invalid article image — falling back")
+
+    # Fallback: Unsplash (always works)
+    if img is None:
+        r = requests.get(
+            f"https://source.unsplash.com/{VIDEO_W}x{VIDEO_H}/entertainment",
+            timeout=15
+        )
+        img = Image.open(BytesIO(r.content)).convert("RGB")
 
     img = img.resize((VIDEO_W, VIDEO_H))
     out = WORKDIR / "bg.jpg"
@@ -143,15 +136,15 @@ def generate_script(title, desc):
 
 # ---------------- TTS ----------------
 def create_tts(lines):
-    paths, durations = [], []
+    paths, durs = [], []
     for i, line in enumerate(lines):
         path = WORKDIR / f"tts_{i}.mp3"
         gTTS(line).save(path)
         audio = AudioFileClip(str(path))
-        durations.append(max(audio.duration, 1))
+        durs.append(max(audio.duration, 1))
         audio.close()
         paths.append(str(path))
-    return paths, durations
+    return paths, durs
 
 
 # ---------------- Captions ----------------
@@ -160,12 +153,7 @@ def render_caption(text, idx):
     draw = ImageDraw.Draw(img)
     font = ImageFont.load_default()
     w, h = draw.textsize(text, font)
-    draw.text(
-        ((VIDEO_W - w) // 2, (CAPTION_HEIGHT - h) // 2),
-        text,
-        fill="white",
-        font=font
-    )
+    draw.text(((VIDEO_W - w)//2, (CAPTION_HEIGHT - h)//2), text, fill="white", font=font)
     out = WORKDIR / f"cap_{idx}.png"
     img.save(out)
     return str(out)
@@ -173,13 +161,13 @@ def render_caption(text, idx):
 
 # ---------------- Video ----------------
 def build_video(bg, lines, tts, durs):
-    bg_clip = ImageClip(bg).set_duration(sum(durs) + 1)
+    bg_clip = ImageClip(bg).set_duration(sum(durs)+1)
     bg_clip = bg_clip.fx(vfx.resize, lambda t: 1 + ZOOM_RATE * t)
 
     clips, t = [], 0
-    for i, (line, dur) in enumerate(zip(lines, durs)):
-        cap = ImageClip(render_caption(line, i)).set_start(t).set_duration(dur)
-        cap = cap.set_position(("center", VIDEO_H * 0.78))
+    for i, dur in enumerate(durs):
+        cap = ImageClip(render_caption(lines[i], i)).set_start(t).set_duration(dur)
+        cap = cap.set_position(("center", VIDEO_H*0.78))
         clips.append(cap)
         t += dur
 
@@ -191,7 +179,7 @@ def build_video(bg, lines, tts, durs):
     return str(out)
 
 
-# ---------------- YouTube Upload ----------------
+# ---------------- Uploads ----------------
 def upload_youtube(video, title, desc):
     creds = Credentials(
         None,
@@ -202,40 +190,31 @@ def upload_youtube(video, title, desc):
     )
     creds.refresh(Request())
     yt = build("youtube", "v3", credentials=creds)
-
-    body = {
-        "snippet": {"title": title, "description": desc},
-        "status": {"privacyStatus": "public"}
-    }
-
-    req = yt.videos().insert(
+    yt.videos().insert(
         part="snippet,status",
-        body=body,
+        body={"snippet": {"title": title, "description": desc},
+              "status": {"privacyStatus": "public"}},
         media_body=MediaFileUpload(video)
-    )
-    req.execute()
+    ).execute()
     log("Uploaded to YouTube")
 
 
-# ---------------- Facebook Upload ----------------
 def upload_facebook(video, title, desc):
     if not FB_PAGE_ID or not FB_PAGE_TOKEN:
-        log("Facebook credentials missing — skipping FB upload")
         return
-
-    url = f"https://graph.facebook.com/v24.0/{FB_PAGE_ID}/videos"
-    files = {"source": open(video, "rb")}
-    data = {
-        "access_token": FB_PAGE_TOKEN,
-        "title": title,
-        "description": f"{desc}\n\n#GossipHub #Entertainment #News"
-    }
-
-    r = requests.post(url, files=files, data=data, timeout=300)
+    r = requests.post(
+        f"https://graph.facebook.com/v24.0/{FB_PAGE_ID}/videos",
+        files={"source": open(video, "rb")},
+        data={
+            "access_token": FB_PAGE_TOKEN,
+            "title": title,
+            "description": f"{desc}\n\n#GossipHub #Entertainment #News"
+        },
+        timeout=300
+    )
     if r.status_code != 200:
-        raise RuntimeError(f"FB upload failed: {r.text}")
-
-    log("Uploaded to Facebook Page")
+        raise RuntimeError(r.text)
+    log("Uploaded to Facebook")
 
 
 # ---------------- MAIN ----------------
@@ -243,7 +222,6 @@ def main():
     log("Starting...")
     title, desc, img = get_news_article()
     lines = generate_script(title, desc)
-
     bg = fetch_and_prepare_bg(img)
     tts, durs = create_tts(lines)
     video = build_video(bg, lines, tts, durs)
