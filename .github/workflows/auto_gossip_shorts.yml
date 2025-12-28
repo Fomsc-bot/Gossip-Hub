@@ -1,4 +1,4 @@
-name: Auto Gossip Shorts (Publish Twice Daily)
+name: Auto FB reels (Publish Twice Daily)
 
 on:
   schedule:
