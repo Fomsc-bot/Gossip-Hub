@@ -22,7 +22,7 @@ PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
 GNEWS_API_KEY = os.getenv("GNEWS_API_KEY")
 
 FB_PAGE_ID = os.getenv("FB_PAGE_ID")  # Your Facebook Page ID
-FB_PAGE_ACCESS_TOKEN = os.getenv("FB_PAGE_ACCESS_TOKEN")  # Page Access Token
+FB_PAGE_ACCESS_TOKEN = os.getenv("FB_PAGE_TOKEN")  # Page Access Token
 
 WORKDIR = Path("work")
 WORKDIR.mkdir(exist_ok=True)
@@ -157,7 +157,7 @@ def generate_script(headline, description="", lead=""):
         "Here’s the latest update on this story.",
         description or lead or "Sources confirm new developments.",
         "People are reacting strongly to the news.",
-        "Follow for more updates 🔔"
+        "Follow for more updates"
     ]
 
 def create_tts_per_line(lines):
