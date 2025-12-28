@@ -1,4 +1,4 @@
-name: Auto FB reels (Publish Twice Daily)
+name: Auto FB Reels (Publish Twice Daily)
 
 on:
   schedule:
@@ -29,10 +29,19 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run automation
+      - name: Debug FB credentials
+        run: |
+          echo "FB_PAGE_ID is set: ${FB_PAGE_ID:+YES}"
+          echo "FB_PAGE_ACCESS_TOKEN is set: ${FB_PAGE_ACCESS_TOKEN:+YES}"
         env:
           FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
           FB_PAGE_ACCESS_TOKEN: ${{ secrets.FB_PAGE_ACCESS_TOKEN }}
+
+      - name: Run automation
+        env:
+          NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
+          FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
+          FB_PAGE_ACCESS_TOKEN: ${{ secrets.FB_PAGE_ACCESS_TOKEN }}
+          NUM_IMAGES: '5'
         run: |
           python main2.py
-
