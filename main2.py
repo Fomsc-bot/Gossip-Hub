@@ -22,7 +22,7 @@ PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
 GNEWS_API_KEY = os.getenv("GNEWS_API_KEY")
 
 FB_PAGE_ID = os.getenv("FB_PAGE_ID")  # Your Facebook Page ID
-FB_PAGE_ACCESS_TOKEN = os.getenv("FB_PAGE_TOKEN")  # Page Access Token
+FB_PAGE_ACCESS_TOKEN = os.getenv("FB_PAGE_ACCESS_TOKEN")  # Page Access Token
 
 WORKDIR = Path("work")
 WORKDIR.mkdir(exist_ok=True)
