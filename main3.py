@@ -12,7 +12,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from moviepy.editor import (
     ImageClip, AudioFileClip, CompositeVideoClip,
-    concatenate_audioclips, concatenate_videoclips, vfx, VideoFileClip
+    concatenate_audioclips, vfx
 )
 
 from googleapiclient.discovery import build
@@ -49,9 +49,6 @@ CAPTION_HEIGHT = int(VIDEO_H * 0.16)
 FPS = 24
 ZOOM_RATE = 0.015
 BASE_FONT_SIZE = 56
-MAX_CAPTION_CHARS = 220
-
-OUTTRO_DIR = Path("Outtro")
 
 def log(*a):
     print("[BOT]", *a)
@@ -62,8 +59,7 @@ def sanitize_text(s: str) -> str:
         return ""
     s = html.unescape(s)
     s = re.sub(r'[\x00-\x1f\x7f-\x9f]', "", s)
-    s = re.sub(r'\s+', ' ', s).strip()
-    return s.strip(" \"'")
+    return re.sub(r'\s+', ' ', s).strip(" \"'")
 
 # ---------------- Duplicate filter ----------------
 def has_uploaded(title):
@@ -77,61 +73,47 @@ def save_uploaded(title):
 
 # ---------------- News fetching ----------------
 def _try_newsapi_fetch():
-    if not NEWS_API_KEY:
-        raise RuntimeError("NEWS_API_KEY missing")
     url = f"https://newsapi.org/v2/top-headlines?category=entertainment&pageSize=5&apiKey={NEWS_API_KEY}"
     return requests.get(url, timeout=15).json()["articles"]
 
 def _try_gnews_fetch():
-    if not GNEWS_API_KEY:
-        raise RuntimeError("GNEWS_API_KEY missing")
     url = f"https://gnews.io/api/v4/top-headlines?topic=entertainment&lang=en&max=5&token={GNEWS_API_KEY}"
     return requests.get(url, timeout=15).json()["articles"]
 
 def fetch_article_lead(url):
     try:
         r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
-        html_text = r.text
-
-        m = re.search(r'og:description" content="([^"]+)"', html_text)
-        if m:
-            return sanitize_text(m.group(1).split(".")[0])
-
-        p = re.search(r"<p[^>]*>(.*?)</p>", html_text, re.S)
-        if p:
-            clean = re.sub(r"<[^>]+>", "", p.group(1))
-            return sanitize_text(clean.split(".")[0])
-
+        m = re.search(r'og:description" content="([^"]+)"', r.text)
+        return sanitize_text(m.group(1).split(".")[0]) if m else ""
     except Exception:
-        pass
-    return ""
+        return ""
 
 def get_news_article():
     for fetcher in (_try_newsapi_fetch, _try_gnews_fetch):
         try:
-            articles = fetcher()
-            for art in articles:
+            for art in fetcher():
                 title = sanitize_text(art.get("title", "Entertainment Update"))
                 if has_uploaded(title):
                     continue
-                desc = sanitize_text(art.get("description", ""))
-                img = art.get("urlToImage") or art.get("image")
-                url = art.get("url") or art.get("link")
-                lead = fetch_article_lead(url)
-                return title, desc, img, url, lead
+                return (
+                    title,
+                    sanitize_text(art.get("description", "")),
+                    art.get("urlToImage") or art.get("image"),
+                    art.get("url") or art.get("link"),
+                    fetch_article_lead(art.get("url"))
+                )
         except Exception:
             continue
     raise RuntimeError("Failed to fetch news")
 
-# ---------------- Background image ----------------
+# ---------------- Background ----------------
 def fetch_and_prepare_bg(image_url):
     try:
-        r = requests.get(image_url, timeout=15)
-        img = Image.open(BytesIO(r.content)).convert("RGB")
+        img = Image.open(BytesIO(requests.get(image_url, timeout=15).content))
     except Exception:
-        r = requests.get(f"https://source.unsplash.com/{VIDEO_W}x{VIDEO_H}/entertainment")
-        img = Image.open(BytesIO(r.content)).convert("RGB")
-
+        img = Image.open(BytesIO(
+            requests.get(f"https://source.unsplash.com/{VIDEO_W}x{VIDEO_H}/celebrity").content
+        ))
     img = img.resize((VIDEO_W, VIDEO_H))
     out = WORKDIR / "bg.jpg"
     img.save(out)
@@ -141,16 +123,10 @@ def fetch_and_prepare_bg(image_url):
 def summarize_with_gemini(headline, description, lead):
     if not genai:
         return None
-
-    prompt = f"""
+    try:
+        prompt = f"""
 Write a natural YouTube Shorts voiceover (4–5 lines).
-
-Rules:
-- Human tone
-- Short sentences
-- No emojis
-- No hashtags
-- Last line: soft subscribe CTA
+Human, short sentences, last line soft subscribe CTA.
 
 Headline:
 {headline}
@@ -158,91 +134,104 @@ Headline:
 Summary:
 {description or lead}
 """
-
-    try:
         model = genai.GenerativeModel("gemini-1.5-flash")
-        response = model.generate_content(prompt)
-        lines = [sanitize_text(l) for l in response.text.split("\n") if sanitize_text(l)]
-        return lines[:5] if len(lines) >= 3 else None
+        resp = model.generate_content(prompt)
+        lines = [sanitize_text(l) for l in resp.text.split("\n") if sanitize_text(l)]
+        return lines[:5]
     except Exception:
         return None
 
 # ---------------- Script generator ----------------
-def generate_script(headline, description="", lead=""):
-    gemini_lines = summarize_with_gemini(headline, description, lead)
-    if gemini_lines:
-        return gemini_lines
-
-    return [
+def generate_script(headline, description, lead):
+    return summarize_with_gemini(headline, description, lead) or [
         headline,
-        "Here’s the latest update on this story.",
-        description or lead or "Sources confirm new developments.",
-        "People are reacting strongly online.",
+        "Here’s the latest update.",
+        description or lead,
+        "People are reacting online.",
         "Subscribe for clear entertainment updates."
     ]
 
 # ---------------- TTS ----------------
-def create_tts_per_line(lines):
-    tts_paths, durations = [], []
+def create_tts(lines):
+    paths, durs = [], []
     for i, line in enumerate(lines):
         out = WORKDIR / f"tts_{i}.mp3"
-        gTTS(text=line, lang="en").save(out)
-        audio = AudioFileClip(str(out))
-        durations.append(audio.duration + 0.25)
-        audio.close()
-        tts_paths.append(str(out))
-    return tts_paths, durations
+        gTTS(line).save(out)
+        clip = AudioFileClip(str(out))
+        durs.append(clip.duration + 0.25)
+        clip.close()
+        paths.append(str(out))
+    return paths, durs
 
 # ---------------- Captions ----------------
-def render_bottom_caption(text, index):
+def caption(text, i):
     font = ImageFont.truetype(
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         BASE_FONT_SIZE
     )
-    wrapped = "\n".join(textwrap.wrap(text, 28))
-    img = Image.new("RGBA", (VIDEO_W, CAPTION_HEIGHT), (0, 0, 0, 200))
+    img = Image.new("RGBA", (VIDEO_W, CAPTION_HEIGHT), (0,0,0,200))
     draw = ImageDraw.Draw(img)
-
-    bbox = draw.multiline_textbbox((0, 0), wrapped, font=font)
-    x = (VIDEO_W - (bbox[2] - bbox[0])) // 2
-    y = (CAPTION_HEIGHT - (bbox[3] - bbox[1])) // 2
-    draw.multiline_text((x, y), wrapped, font=font, fill="white", align="center")
-
-    out = WORKDIR / f"cap_{index}.png"
+    wrapped = "\n".join(textwrap.wrap(text, 28))
+    draw.multiline_text((40, 20), wrapped, font=font, fill="white")
+    out = WORKDIR / f"cap_{i}.png"
     img.save(out)
-    return str(out)
+    return out
 
 # ---------------- Video build ----------------
-def build_final_video(bg_path, lines, tts_paths, durations, out_file):
-    total = sum(durations) + 1
-    bg = ImageClip(bg_path).set_duration(total)
-    bg = bg.fx(vfx.resize, lambda t: 1 + ZOOM_RATE * t)
-
-    caps, cursor = [], 0
-    for i, dur in enumerate(durations):
-        cap = ImageClip(render_bottom_caption(lines[i], i)).set_duration(dur).set_start(cursor)
+def build_video(bg, lines, tts, durs, out):
+    total = sum(durs) + 1
+    bg = ImageClip(bg).set_duration(total).fx(vfx.resize, lambda t: 1 + ZOOM_RATE * t)
+    clips, t = [], 0
+    for i, d in enumerate(durs):
+        cap = ImageClip(str(caption(lines[i], i))).set_duration(d).set_start(t)
         cap = cap.set_position(("center", VIDEO_H * 0.78))
-        caps.append(cap)
-        cursor += dur
+        clips.append(cap)
+        t += d
+    audio = concatenate_audioclips([AudioFileClip(p) for p in tts])
+    CompositeVideoClip([bg] + clips).set_audio(audio).write_videofile(
+        str(out), fps=FPS, codec="libx264", audio_codec="aac"
+    )
 
-    audio = concatenate_audioclips([AudioFileClip(p) for p in tts_paths])
-    final = CompositeVideoClip([bg] + caps).set_audio(audio)
-    final.write_videofile(str(out_file), fps=FPS, codec="libx264", audio_codec="aac")
-    return str(out_file)
+# ---------------- YouTube upload ----------------
+def upload_to_youtube(video_path, title, description):
+    creds = Credentials(
+        token=None,
+        refresh_token=YT_REFRESH_TOKEN,
+        client_id=YT_CLIENT_ID,
+        client_secret=YT_CLIENT_SECRET,
+        token_uri="https://oauth2.googleapis.com/token",
+        scopes=["https://www.googleapis.com/auth/youtube.upload"]
+    )
+    creds.refresh(Request())
+    yt = build("youtube", "v3", credentials=creds)
+
+    body = {
+        "snippet": {
+            "title": title[:100],
+            "description": description,
+            "tags": ["shorts", "entertainment", "news"]
+        },
+        "status": {"privacyStatus": "public"}
+    }
+
+    media = MediaFileUpload(video_path, resumable=True)
+    yt.videos().insert(part="snippet,status", body=body, media_body=media).execute()
 
 # ---------------- MAIN ----------------
 def main():
     log("Starting pipeline...")
-    title, desc, img_url, article_url, lead = get_news_article()
+    title, desc, img, url, lead = get_news_article()
     lines = generate_script(title, desc, lead)
 
-    bg = fetch_and_prepare_bg(img_url)
-    tts_paths, durations = create_tts_per_line(lines)
-    out_video = WORKDIR / "final.mp4"
+    bg = fetch_and_prepare_bg(img)
+    tts, durs = create_tts(lines)
+    out = WORKDIR / "final.mp4"
 
-    build_final_video(bg, lines, tts_paths, durations, out_video)
+    build_video(bg, lines, tts, durs, out)
+    upload_to_youtube(out, title, desc or lead)
     save_uploaded(title)
-    log("DONE")
+
+    log("DONE — uploaded to YouTube")
 
 if __name__ == "__main__":
     main()
