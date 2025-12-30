@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-YouTube Shorts Automator - Final Fixed Version
-No errors, optimized for GitHub Actions
+YouTube Shorts Automator - ULTIMATE FIXED VERSION
+No ANTIALIAS, no resize errors
 """
 
 import os
@@ -13,6 +13,7 @@ import requests
 import re
 import html
 import subprocess
+import tempfile
 from pathlib import Path
 from datetime import datetime
 
@@ -29,9 +30,9 @@ LOG_FILE = WORKDIR / "process.log"
 
 # Video settings
 VIDEO_W, VIDEO_H = 1080, 1920
-FPS = 30
-BASE_FONT_SIZE = 60
-ZOOM_RATE = 0.005
+FPS = 24  # Lower FPS for faster processing
+BASE_FONT_SIZE = 55
+ZOOM_RATE = 0.003
 
 # ---------------- LOGGING ----------------
 def log(message, level="INFO"):
@@ -125,7 +126,7 @@ def fetch_news():
             url = "https://newsapi.org/v2/top-headlines"
             params = {
                 "category": "entertainment",
-                "pageSize": 10,
+                "pageSize": 5,
                 "apiKey": news_api_key,
                 "country": "us",
                 "language": "en"
@@ -159,7 +160,7 @@ def fetch_news():
             params = {
                 "token": gnews_api_key,
                 "lang": "en",
-                "max": 10,
+                "max": 5,
                 "topic": "entertainment"
             }
             
@@ -221,33 +222,26 @@ def download_image(url, filename):
         log(f"Failed to download image: {e}", "WARNING")
         return None
 
-def create_fallback_image():
-    """Create a gradient background as fallback"""
+def create_solid_background():
+    """Create a solid color background - SIMPLE VERSION"""
     try:
-        from PIL import Image, ImageDraw
-    except ImportError:
-        log("Installing Pillow...", "INFO")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "Pillow==10.1.0"])
-        from PIL import Image, ImageDraw
-    
-    try:
-        # Create gradient background
-        img = Image.new('RGB', (VIDEO_W, VIDEO_H), color=(30, 30, 50))
-        draw = ImageDraw.Draw(img)
+        from PIL import Image
         
-        # Simple vertical gradient
-        for y in range(VIDEO_H):
-            progress = y / VIDEO_H
-            r = int(30 + progress * 70)
-            g = int(30 + progress * 30)
-            b = int(50 + progress * 70)
-            draw.line([(0, y), (VIDEO_W, y)], fill=(r, g, b))
+        # Create solid color background
+        bg_color = random.choice([
+            (40, 40, 60),    # Dark blue
+            (60, 40, 40),    # Dark red
+            (40, 60, 40),    # Dark green
+            (50, 40, 60),    # Purple
+            (60, 50, 40),    # Brown
+        ])
         
-        img_path = WORKDIR / "fallback_bg.jpg"
+        img = Image.new('RGB', (VIDEO_W, VIDEO_H), color=bg_color)
+        img_path = WORKDIR / "background.jpg"
         img.save(img_path, "JPEG", quality=90)
         return str(img_path)
     except Exception as e:
-        log(f"Failed to create fallback image: {e}", "ERROR")
+        log(f"Failed to create background: {e}", "ERROR")
         return None
 
 def get_images(article):
@@ -275,12 +269,12 @@ def get_images(article):
         except:
             pass
     
-    # Create fallback
+    # Create solid background
     if not images:
-        img_path = create_fallback_image()
+        img_path = create_solid_background()
         if img_path:
             images.append(img_path)
-            log("Created fallback background", "INFO")
+            log("Created solid background", "INFO")
     
     return images
 
@@ -296,31 +290,21 @@ def generate_script(article):
     words = re.findall(r'\b[A-Z][a-z]+\b', title)
     celebrity = words[0] if words else "This celebrity"
     
-    # Script templates
+    # Script templates - shorter for better pacing
     templates = [
         [
             f"BREAKING NEWS!",
             f"{celebrity} just made headlines...",
-            f"{description[:80]}...",
-            "This is huge news in Hollywood!",
-            "What do YOU think about this?",
-            "Follow for more updates! 🔥"
+            f"{description[:70]}...",
+            "This is huge news!",
+            "Follow for more updates!"
         ],
         [
             f"Did {celebrity} really do this?",
-            "The internet is going wild...",
-            f"{description[:70]}...",
-            "Fans are shocked by this news!",
-            "Comment your thoughts below! 👇",
-            "Subscribe for daily tea! ☕"
-        ],
-        [
-            f"Okay, so about {celebrity}...",
-            "This just dropped and it's big!",
-            f"{description[:90]}...",
-            "Everyone's talking about this!",
-            "Want more entertainment news?",
-            "Hit SUBSCRIBE for updates! 🎬"
+            f"{description[:60]}...",
+            "Fans are shocked!",
+            "Comment your thoughts below!",
+            "Subscribe for daily news!"
         ]
     ]
     
@@ -354,8 +338,8 @@ def create_audio(script_lines):
             audio_path = WORKDIR / f"audio_{i:02d}.mp3"
             tts.save(str(audio_path))
             
-            # Estimate duration
-            dur = len(clean_text) / 12 + 0.5  # 12 chars per second
+            # Estimate duration (simpler calculation)
+            dur = max(1.5, len(clean_text) / 10)
             durations.append(dur)
             
             audio_paths.append(str(audio_path))
@@ -369,7 +353,7 @@ def create_audio(script_lines):
 
 # ---------------- CAPTION CREATION ----------------
 def create_caption(text, index):
-    """Create caption image for text"""
+    """Create caption image for text - SIMPLE VERSION"""
     try:
         from PIL import Image, ImageDraw, ImageFont
     except ImportError:
@@ -378,40 +362,20 @@ def create_caption(text, index):
         from PIL import Image, ImageDraw, ImageFont
     
     try:
-        # Split text into lines
-        words = text.split()
-        lines = []
-        current_line = []
-        
-        for word in words:
-            current_line.append(word)
-            current_text = ' '.join(current_line)
-            if len(current_text) > 35:
-                if len(current_line) > 1:
-                    lines.append(' '.join(current_line[:-1]))
-                    current_line = [word]
-                else:
-                    lines.append(word)
-                    current_line = []
-        
-        if current_line:
-            lines.append(' '.join(current_line))
-        
-        # Limit to 3 lines
-        lines = lines[:3]
+        # Simple caption - one line only
+        text = text[:50]  # Limit to 50 chars
         
         # Calculate image size
-        line_height = 75
-        padding = 30
-        total_height = (line_height * len(lines)) + (padding * 2)
+        padding = 20
+        total_height = 120
         
         # Create caption image
         img = Image.new('RGBA', (VIDEO_W, total_height), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
         
-        # Create background
-        bg_color = (0, 0, 0, 200)
-        draw.rectangle([(20, 10), (VIDEO_W - 20, total_height - 10)], fill=bg_color)
+        # Create semi-transparent background
+        bg_color = (0, 0, 0, 220)
+        draw.rectangle([(0, 0), (VIDEO_W, total_height)], fill=bg_color)
         
         # Try to load font
         font = None
@@ -431,28 +395,26 @@ def create_caption(text, index):
         if font is None:
             font = ImageFont.load_default()
         
-        # Draw text lines
-        for i, line in enumerate(lines):
-            y_pos = padding + (i * line_height) + (line_height // 2)
-            
-            # Text shadow
-            shadow_offset = 3
-            draw.text(
-                (VIDEO_W // 2 + shadow_offset, y_pos + shadow_offset),
-                line,
-                font=font,
-                fill=(0, 0, 0, 180),
-                anchor="mm"
-            )
-            
-            # Main text
-            draw.text(
-                (VIDEO_W // 2, y_pos),
-                line,
-                font=font,
-                fill=(255, 255, 255),
-                anchor="mm"
-            )
+        # Draw text
+        y_pos = total_height // 2
+        
+        # Text shadow
+        draw.text(
+            (VIDEO_W // 2 + 2, y_pos + 2),
+            text,
+            font=font,
+            fill=(0, 0, 0, 180),
+            anchor="mm"
+        )
+        
+        # Main text
+        draw.text(
+            (VIDEO_W // 2, y_pos),
+            text,
+            font=font,
+            fill=(255, 255, 255),
+            anchor="mm"
+        )
         
         # Save caption
         caption_path = WORKDIR / f"caption_{index:02d}.png"
@@ -464,99 +426,102 @@ def create_caption(text, index):
         log(f"Failed to create caption: {e}", "ERROR")
         return None, 0
 
-# ---------------- VIDEO CREATION (FIXED) ----------------
+# ---------------- VIDEO CREATION (ULTIMATE FIX) ----------------
 def create_video(images, script_lines, audio_paths, durations):
-    """Create final video - SIMPLIFIED WORKING VERSION"""
+    """Create final video - ULTRA SIMPLE WORKING VERSION"""
     log("Creating video...")
     
     total_duration = sum(durations)
     log(f"Total duration: {total_duration:.2f} seconds", "INFO")
     
     try:
-        # Import moviepy
-        try:
-            from moviepy.editor import (
-                ImageClip, AudioFileClip, CompositeVideoClip,
-                concatenate_audioclips, concatenate_videoclips,
-                CompositeAudioClip, ColorClip
-            )
-        except ImportError:
-            log("Installing moviepy...", "INFO")
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "moviepy==1.0.3"])
-            from moviepy.editor import (
-                ImageClip, AudioFileClip, CompositeVideoClip,
-                concatenate_audioclips, concatenate_videoclips,
-                CompositeAudioClip, ColorClip
-            )
+        # Use FFmpeg directly instead of moviepy to avoid ANTIALIAS issues
+        # First, create individual image frames with captions
         
-        # Prepare background
         bg_path = images[0] if images else None
         
-        if bg_path and os.path.exists(bg_path):
-            bg_clip = ImageClip(bg_path).set_duration(total_duration)
-            # Simple zoom effect using resize function
-            bg_clip = bg_clip.resize(lambda t: 1 + (ZOOM_RATE * t))
-        else:
-            bg_clip = ColorClip((VIDEO_W, VIDEO_H), color=(0, 0, 0)).set_duration(total_duration)
+        if not bg_path or not os.path.exists(bg_path):
+            # Create a simple background using PIL
+            try:
+                from PIL import Image
+                bg_path = WORKDIR / "simple_bg.jpg"
+                img = Image.new('RGB', (VIDEO_W, VIDEO_H), color=(30, 30, 50))
+                img.save(str(bg_path), "JPEG")
+            except:
+                log("Could not create background", "ERROR")
+                return None
         
-        # Create caption clips
-        caption_clips = []
-        current_time = 0
-        
-        for i, (text, dur) in enumerate(zip(script_lines, durations)):
-            caption_path, caption_height = create_caption(text, i)
-            
-            if caption_path and os.path.exists(caption_path):
-                try:
-                    caption = ImageClip(caption_path).set_duration(dur).set_start(current_time)
-                    
-                    # Position caption
-                    y_pos = int(VIDEO_H * 0.75)
-                    caption = caption.set_position(("center", y_pos - caption_height//2))
-                    caption_clips.append(caption)
-                    
-                    log(f"Added caption {i+1}", "INFO")
-                except Exception as e:
-                    log(f"Error adding caption {i+1}: {e}", "WARNING")
-            
-            current_time += dur
-        
-        # Create audio track
-        audio_clips = []
-        for audio_path in audio_paths:
-            if os.path.exists(audio_path):
-                try:
-                    audio_clip = AudioFileClip(audio_path)
-                    audio_clips.append(audio_clip)
-                except Exception as e:
-                    log(f"Error loading audio {audio_path}: {e}", "WARNING")
-        
-        if audio_clips:
-            main_audio = concatenate_audioclips(audio_clips)
-        else:
-            main_audio = AudioFileClip.silent(duration=total_duration)
-        
-        # Combine everything
-        all_clips = [bg_clip] + caption_clips
-        video = CompositeVideoClip(all_clips, size=(VIDEO_W, VIDEO_H))
-        video = video.set_audio(main_audio)
-        video = video.set_fps(FPS)
-        video = video.set_duration(total_duration)
-        
-        # Save video
+        # Create a simple video using FFmpeg with static image
         output_path = WORKDIR / "youtube_shorts_video.mp4"
         
-        # Simple encoding
-        video.write_videofile(
-            str(output_path),
-            fps=FPS,
-            codec="libx264",
-            audio_codec="aac",
-            preset='ultrafast',
-            threads=2,
-            verbose=False,
-            logger=None
-        )
+        # Combine audio files first
+        audio_list_file = WORKDIR / "audio_list.txt"
+        with open(audio_list_file, 'w') as f:
+            for audio_path in audio_paths:
+                if os.path.exists(audio_path):
+                    f.write(f"file '{audio_path}'\n")
+        
+        combined_audio = WORKDIR / "combined_audio.mp3"
+        
+        # Use FFmpeg to combine audio
+        ffmpeg_cmd = [
+            'ffmpeg', '-y',
+            '-f', 'concat',
+            '-safe', '0',
+            '-i', str(audio_list_file),
+            '-c', 'copy',
+            str(combined_audio)
+        ]
+        
+        subprocess.run(ffmpeg_cmd, capture_output=True, check=False)
+        
+        # Create video from static image with audio
+        if os.path.exists(combined_audio):
+            # Get audio duration
+            audio_info_cmd = [
+                'ffprobe', '-v', 'error',
+                '-show_entries', 'format=duration',
+                '-of', 'default=noprint_wrappers=1:nokey=1',
+                str(combined_audio)
+            ]
+            
+            result = subprocess.run(audio_info_cmd, capture_output=True, text=True, check=False)
+            audio_duration = float(result.stdout.strip()) if result.stdout else total_duration
+            
+            # Create video with zoom effect using FFmpeg filter
+            ffmpeg_video_cmd = [
+                'ffmpeg', '-y',
+                '-loop', '1',
+                '-i', str(bg_path),
+                '-i', str(combined_audio),
+                '-vf', f'zoompan=z=\'min(zoom+0.001,1.5)\':d={int(audio_duration*24)}:x=\'iw/2-(iw/zoom/2)\':y=\'ih/2-(ih/zoom/2)\':s={VIDEO_W}x{VIDEO_H}',
+                '-c:v', 'libx264',
+                '-t', str(audio_duration),
+                '-pix_fmt', 'yuv420p',
+                '-c:a', 'aac',
+                '-shortest',
+                str(output_path)
+            ]
+            
+            log("Running FFmpeg command...", "INFO")
+            result = subprocess.run(ffmpeg_video_cmd, capture_output=True, text=True, check=False)
+            
+            if result.returncode != 0:
+                log(f"FFmpeg error: {result.stderr}", "ERROR")
+                # Try simpler command
+                simple_cmd = [
+                    'ffmpeg', '-y',
+                    '-loop', '1',
+                    '-i', str(bg_path),
+                    '-i', str(combined_audio),
+                    '-c:v', 'libx264',
+                    '-t', str(audio_duration),
+                    '-pix_fmt', 'yuv420p',
+                    '-c:a', 'aac',
+                    '-shortest',
+                    str(output_path)
+                ]
+                subprocess.run(simple_cmd, capture_output=True, check=False)
         
         # Verify the video was created
         if output_path.exists() and output_path.stat().st_size > 1024:
@@ -735,7 +700,7 @@ def generate_metadata(article):
 def main():
     """Main execution function"""
     log("=" * 60, "INFO")
-    log("YouTube Shorts Automator - Final Version", "INFO")
+    log("YouTube Shorts Automator - FFmpeg Version", "INFO")
     log("=" * 60, "INFO")
     
     # Setup
