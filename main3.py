@@ -84,7 +84,7 @@ def fetch_article_lead(url):
     try:
         r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
         m = re.search(r'og:description" content="([^"]+)"', r.text)
-        return sanitize_text(m.group(1).split(".")[0]) if m else ""
+        return sanitize_text(m.group(1)) if m else ""
     except Exception:
         return ""
 
@@ -119,37 +119,98 @@ def fetch_and_prepare_bg(image_url):
     img.save(out)
     return str(out)
 
-# ---------------- Gemini summarizer ----------------
+# ---------------- Gemini deep summarizer ----------------
 def summarize_with_gemini(headline, description, lead):
     if not genai:
-        return None
-    try:
-        prompt = f"""
-Write a natural YouTube Shorts voiceover (4–5 lines).
-Human, short sentences, last line soft subscribe CTA.
+        return None, None
 
+    prompt = f"""
+You are a professional YouTube Shorts journalist.
+
+GOAL:
+Create a HIGH-RETENTION Shorts script that explains the FULL story.
+
+SCRIPT RULES:
+- First line MUST hook instantly
+- Cover all important facts
+- Clear, human, conversational
+- 6–8 short spoken lines
+- No emojis in script
+- Final line: soft subscribe CTA
+
+TITLE RULES:
+- EXACTLY 3 words
+- Add at least 3 relevant emojis at the end
+- Include hashtags
+- Catchy but factual
+
+ARTICLE CONTENT:
 Headline:
 {headline}
 
-Summary:
-{description or lead}
+Description:
+{description}
+
+Article Lead:
+{lead}
+
+FORMAT (STRICT):
+TITLE:
+<one line>
+
+SCRIPT:
+<one sentence per line>
 """
+
+    try:
         model = genai.GenerativeModel("gemini-1.5-flash")
         resp = model.generate_content(prompt)
-        lines = [sanitize_text(l) for l in resp.text.split("\n") if sanitize_text(l)]
-        return lines[:5]
-    except Exception:
-        return None
+
+        if not resp or not resp.text:
+            return None, None
+
+        text = resp.text.strip()
+
+        title_match = re.search(r"TITLE:\s*(.+)", text)
+        script_match = re.search(r"SCRIPT:\s*(.+)", text, re.S)
+
+        if not title_match or not script_match:
+            return None, None
+
+        yt_title = sanitize_text(title_match.group(1))
+        lines = [
+            sanitize_text(l)
+            for l in script_match.group(1).split("\n")
+            if sanitize_text(l)
+        ]
+
+        if len(lines) < 4:
+            return None, None
+
+        return yt_title, lines[:8]
+
+    except Exception as e:
+        log("Gemini failed:", e)
+        return None, None
 
 # ---------------- Script generator ----------------
 def generate_script(headline, description, lead):
-    return summarize_with_gemini(headline, description, lead) or [
+    yt_title, lines = summarize_with_gemini(headline, description, lead)
+
+    if yt_title and lines:
+        return yt_title, lines
+
+    fallback_title = "Breaking Star Update 🔥🎬✨ #Shorts #Entertainment #Celebs"
+
+    fallback_lines = [
+        "This story is taking over social media right now.",
         headline,
-        "Here’s the latest update.",
-        description or lead,
-        "People are reacting online.",
-        "Subscribe for clear entertainment updates."
+        description or lead or "Here’s what we know so far.",
+        "Fans and critics are reacting fast.",
+        "Follow for real entertainment updates."
     ]
+
+    return fallback_title, fallback_lines
 
 # ---------------- TTS ----------------
 def create_tts(lines):
@@ -169,7 +230,7 @@ def caption(text, i):
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         BASE_FONT_SIZE
     )
-    img = Image.new("RGBA", (VIDEO_W, CAPTION_HEIGHT), (0,0,0,200))
+    img = Image.new("RGBA", (VIDEO_W, CAPTION_HEIGHT), (0, 0, 0, 200))
     draw = ImageDraw.Draw(img)
     wrapped = "\n".join(textwrap.wrap(text, 28))
     draw.multiline_text((40, 20), wrapped, font=font, fill="white")
@@ -181,13 +242,16 @@ def caption(text, i):
 def build_video(bg, lines, tts, durs, out):
     total = sum(durs) + 1
     bg = ImageClip(bg).set_duration(total).fx(vfx.resize, lambda t: 1 + ZOOM_RATE * t)
+
     clips, t = [], 0
     for i, d in enumerate(durs):
         cap = ImageClip(str(caption(lines[i], i))).set_duration(d).set_start(t)
         cap = cap.set_position(("center", VIDEO_H * 0.78))
         clips.append(cap)
         t += d
+
     audio = concatenate_audioclips([AudioFileClip(p) for p in tts])
+
     CompositeVideoClip([bg] + clips).set_audio(audio).write_videofile(
         str(out), fps=FPS, codec="libx264", audio_codec="aac"
     )
@@ -220,15 +284,16 @@ def upload_to_youtube(video_path, title, description):
 # ---------------- MAIN ----------------
 def main():
     log("Starting pipeline...")
+
     title, desc, img, url, lead = get_news_article()
-    lines = generate_script(title, desc, lead)
+    yt_title, lines = generate_script(title, desc, lead)
 
     bg = fetch_and_prepare_bg(img)
     tts, durs = create_tts(lines)
     out = WORKDIR / "final.mp4"
 
     build_video(bg, lines, tts, durs, out)
-    upload_to_youtube(out, title, desc or lead)
+    upload_to_youtube(out, yt_title, desc or lead)
     save_uploaded(title)
 
     log("DONE — uploaded to YouTube")
