@@ -1,16 +1,15 @@
-name: test
+name: Create YouTube Shorts
 
 on:
   schedule:
-    # Run twice daily at different times
-    - cron: '0 12 * * *'  # 12 PM UTC daily
-    - cron: '0 20 * * *'  # 8 PM UTC daily
+    # Run daily at 12 PM UTC
+    - cron: '0 12 * * *'
   workflow_dispatch:  # Manual trigger
 
 jobs:
   create-shorts:
     runs-on: ubuntu-latest
-    timeout-minutes: 30  # Prevent long runs
+    timeout-minutes: 20
     
     steps:
     - name: Checkout repository
@@ -21,48 +20,48 @@ jobs:
       with:
         python-version: '3.10'
         
-    - name: Install system dependencies
+    - name: Install basic system dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y ffmpeg
-        sudo apt-get install -y fonts-dejavu-core fonts-liberation
-        # Create directory for uploaded titles
-        mkdir -p /tmp/youtube_shorts
+        sudo apt-get install -y fonts-dejavu-core
         
-    - name: Install Python packages
+    - name: Install Python packages one by one
       run: |
-        pip install --upgrade pip
-        pip install -r requirements3.txt
+        python -m pip install --upgrade pip
+        pip install gtts==2.3.2
+        pip install Pillow==10.1.0
+        pip install requests==2.31.0
+        pip install moviepy==1.0.3
+        pip install google-api-python-client==2.108.0
+        pip install google-auth==2.23.4
+        pip install google-auth-oauthlib==1.1.0
         
-    - name: Create and upload YouTube Short
+    - name: Create YouTube Short
       env:
         NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
         GNEWS_API_KEY: ${{ secrets.GNEWS_API_KEY }}
         PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
-        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
         YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
         YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
       run: |
         python main3.py
         
-    - name: Upload generated video (for debugging)
+    - name: Upload generated video for debugging
       if: always()
       uses: actions/upload-artifact@v4
       with:
         name: youtube-shorts-video
         path: /tmp/youtube_shorts/*.mp4
+        if-no-files-found: warn
         retention-days: 1
         
-    - name: Upload logs
+    - name: Upload process logs
       if: always()
       uses: actions/upload-artifact@v4
       with:
         name: process-logs
         path: /tmp/youtube_shorts/*.log
+        if-no-files-found: warn
         retention-days: 1
-        
-    - name: Clean workspace
-      if: always()
-      run: |
-        rm -rf /tmp/youtube_shorts
