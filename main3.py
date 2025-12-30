@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-YouTube Shorts Automator - Simple Version
-No Gemini dependency to avoid conflicts
+YouTube Shorts Automator - Fixed Version
+No ANTIALIAS error, optimized for GitHub Actions
 """
 
 import os
@@ -15,7 +15,6 @@ import html
 import subprocess
 from pathlib import Path
 from datetime import datetime
-from io import BytesIO
 
 # Check if running on GitHub Actions
 ON_GITHUB_ACTIONS = os.getenv('GITHUB_ACTIONS') == 'true'
@@ -46,17 +45,16 @@ def log(message, level="INFO"):
     except:
         pass
 
+# ---------------- SETUP ----------------
 def setup_system():
     """Setup system dependencies"""
     log("Setting up system...")
     
     if ON_GITHUB_ACTIONS:
         try:
-            # Install required packages
-            packages = ["ffmpeg", "fonts-dejavu-core", "fonts-liberation"]
-            log(f"Installing packages: {packages}")
             subprocess.run(['apt-get', 'update'], capture_output=True, check=False)
-            subprocess.run(['apt-get', 'install', '-y'] + packages, capture_output=True, check=False)
+            subprocess.run(['apt-get', 'install', '-y', 'ffmpeg', 'fonts-dejavu-core'], 
+                         capture_output=True, check=False)
             log("System packages installed", "SUCCESS")
         except Exception as e:
             log(f"Failed to install system packages: {e}", "ERROR")
@@ -118,7 +116,6 @@ def fetch_news():
     log("Fetching news...")
     uploaded_titles = load_uploaded_titles()
     
-    # Get API keys from environment
     news_api_key = os.getenv("NEWS_API_KEY", "")
     gnews_api_key = os.getenv("GNEWS_API_KEY", "")
     
@@ -155,7 +152,7 @@ def fetch_news():
         except Exception as e:
             log(f"NewsAPI failed: {e}", "WARNING")
     
-    # Try GNews as fallback
+    # Try GNews
     if gnews_api_key and gnews_api_key not in ["", "your_gnews_api_key_here"]:
         try:
             url = "https://gnews.io/api/v4/top-headlines"
@@ -186,7 +183,7 @@ def fetch_news():
         except Exception as e:
             log(f"GNews failed: {e}", "WARNING")
     
-    # Fallback entertainment topics
+    # Fallback
     fallback_topics = [
         "Breaking Celebrity News Today",
         "Latest Hollywood Updates",
@@ -198,7 +195,7 @@ def fetch_news():
     topic = random.choice(fallback_topics)
     return {
         "title": f"{topic} - Entertainment Update",
-        "description": "Stay tuned for the latest developments in entertainment news. More details coming soon.",
+        "description": "Stay tuned for the latest developments in entertainment news.",
         "image_url": "",
         "source_url": "",
         "source": "Fallback"
@@ -227,26 +224,31 @@ def download_image(url, filename):
 def create_fallback_image():
     """Create a gradient background as fallback"""
     try:
-        # Import PIL here to avoid dependency issues
+        # Try to import PIL
         try:
             from PIL import Image, ImageDraw
         except ImportError:
             log("Installing Pillow...", "INFO")
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "Pillow"])
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "Pillow==10.1.0"])
             from PIL import Image, ImageDraw
         
+        # Create gradient background
         img = Image.new('RGB', (VIDEO_W, VIDEO_H), color=(40, 40, 60))
         draw = ImageDraw.Draw(img)
         
-        # Simple gradient
-        for i in range(VIDEO_H):
-            r = int(40 + (i / VIDEO_H) * 80)
-            g = int(40 + (i / VIDEO_H) * 40)
-            b = int(60 + (i / VIDEO_H) * 80)
-            draw.line([(0, i), (VIDEO_W, i)], fill=(r, g, b))
+        # Simple vertical gradient
+        for y in range(VIDEO_H):
+            # Calculate gradient colors
+            progress = y / VIDEO_H
+            r = int(40 + progress * 80)
+            g = int(40 + progress * 40)
+            b = int(60 + progress * 80)
+            
+            # Draw horizontal line
+            draw.line([(0, y), (VIDEO_W, y)], fill=(r, g, b))
         
         img_path = WORKDIR / "fallback_bg.jpg"
-        img.save(img_path, "JPEG", quality=85)
+        img.save(img_path, "JPEG", quality=90)
         return str(img_path)
     except Exception as e:
         log(f"Failed to create fallback image: {e}", "ERROR")
@@ -258,18 +260,18 @@ def get_images(article):
     
     images = []
     
-    # Try to download article image
+    # Try article image
     if article.get("image_url"):
         img_path = download_image(article["image_url"], "main_image.jpg")
         if img_path:
             images.append(img_path)
             log("Downloaded main article image", "SUCCESS")
     
-    # If no image yet, try Unsplash
+    # Try Unsplash
     if not images:
         try:
             search_term = article["title"].split()[0] if article["title"] else "celebrity"
-            unsplash_url = f"https://source.unsplash.com/featured/{VIDEO_W}x{VIDEO_H}/?{search_term}"
+            unsplash_url = f"https://source.unsplash.com/featured/{VIDEO_W}x{VIDEO_H}/?{search_term},hollywood"
             img_path = download_image(unsplash_url, "unsplash_image.jpg")
             if img_path:
                 images.append(img_path)
@@ -277,7 +279,7 @@ def get_images(article):
         except:
             pass
     
-    # Final fallback
+    # Create fallback
     if not images:
         img_path = create_fallback_image()
         if img_path:
@@ -294,13 +296,13 @@ def generate_script(article):
     title = article["title"]
     description = article["description"]
     
-    # Extract key words
+    # Extract celebrity name
     words = re.findall(r'\b[A-Z][a-z]+\b', title)
     celebrity = words[0] if words else "This celebrity"
     
     # Script templates
     templates = [
-        # Template 1: Breaking news
+        # Template 1
         [
             f"BREAKING NEWS!",
             f"{celebrity} just made headlines...",
@@ -309,7 +311,7 @@ def generate_script(article):
             "What do YOU think about this?",
             "Follow for more updates! 🔥"
         ],
-        # Template 2: Question style
+        # Template 2
         [
             f"Did {celebrity} really do this?",
             "The internet is going wild...",
@@ -317,6 +319,15 @@ def generate_script(article):
             "Fans are shocked by this news!",
             "Comment your thoughts below! 👇",
             "Subscribe for daily tea! ☕"
+        ],
+        # Template 3
+        [
+            f"Okay, so about {celebrity}...",
+            "This just dropped and it's big!",
+            f"{description[:90]}...",
+            "Everyone's talking about this!",
+            "Want more entertainment news?",
+            "Hit SUBSCRIBE for updates! 🎬"
         ]
     ]
     
@@ -334,7 +345,7 @@ def create_audio(script_lines):
         from gtts import gTTS
     except ImportError:
         log("Installing gTTS...", "INFO")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "gtts"])
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "gtts==2.3.2"])
         from gtts import gTTS
     
     audio_paths = []
@@ -350,7 +361,7 @@ def create_audio(script_lines):
             audio_path = WORKDIR / f"audio_{i:02d}.mp3"
             tts.save(str(audio_path))
             
-            # Get duration using simple calculation (approx 15 chars per second)
+            # Estimate duration (15 characters per second + pause)
             dur = len(clean_text) / 15 + 0.5
             durations.append(dur)
             
@@ -365,60 +376,76 @@ def create_audio(script_lines):
 
 # ---------------- CAPTION CREATION ----------------
 def create_caption(text, index):
-    """Create caption image for text"""
+    """Create caption image for text - FIXED NO ANTIALIAS"""
     try:
         from PIL import Image, ImageDraw, ImageFont
     except ImportError:
-        log("Installing Pillow for captions...", "INFO")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "Pillow"])
+        log("Installing Pillow...", "INFO")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "Pillow==10.1.0"])
         from PIL import Image, ImageDraw, ImageFont
     
     try:
-        # Split text into lines
+        # Split text into lines (max 35 chars per line)
         words = text.split()
         lines = []
         current_line = []
         
         for word in words:
             current_line.append(word)
-            if len(' '.join(current_line)) > 35:
-                lines.append(' '.join(current_line[:-1]))
-                current_line = [word]
+            current_text = ' '.join(current_line)
+            if len(current_text) > 35:
+                if len(current_line) > 1:
+                    lines.append(' '.join(current_line[:-1]))
+                    current_line = [word]
+                else:
+                    lines.append(word)
+                    current_line = []
         
         if current_line:
             lines.append(' '.join(current_line))
         
+        # Limit to 3 lines
         lines = lines[:3]
         
         # Calculate image size
-        line_height = 70
-        padding = 25
+        line_height = 75
+        padding = 30
         total_height = (line_height * len(lines)) + (padding * 2)
         
-        # Create image
+        # Create caption image
         img = Image.new('RGBA', (VIDEO_W, total_height), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
         
-        # Create background
-        bg_color = (0, 0, 0, 200)
+        # Create semi-transparent background
+        bg_color = (0, 0, 0, 200)  # Black with transparency
         draw.rectangle([(20, 10), (VIDEO_W - 20, total_height - 10)], fill=bg_color)
         
         # Try to load font
-        try:
-            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", BASE_FONT_SIZE)
-        except:
-            try:
-                font = ImageFont.truetype("/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf", BASE_FONT_SIZE)
-            except:
-                font = ImageFont.load_default()
+        font = None
+        font_paths = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        ]
         
-        # Draw text
+        for font_path in font_paths:
+            if os.path.exists(font_path):
+                try:
+                    font = ImageFont.truetype(font_path, BASE_FONT_SIZE)
+                    break
+                except:
+                    continue
+        
+        if font is None:
+            font = ImageFont.load_default()
+        
+        # Draw text lines
         for i, line in enumerate(lines):
             y_pos = padding + (i * line_height) + (line_height // 2)
             
-            # Text shadow
+            # Text shadow for better readability
+            shadow_offset = 3
             draw.text(
-                (VIDEO_W // 2 + 2, y_pos + 2),
+                (VIDEO_W // 2 + shadow_offset, y_pos + shadow_offset),
                 line,
                 font=font,
                 fill=(0, 0, 0, 180),
@@ -434,6 +461,7 @@ def create_caption(text, index):
                 anchor="mm"
             )
         
+        # Save caption
         caption_path = WORKDIR / f"caption_{index:02d}.png"
         img.save(caption_path, "PNG")
         
@@ -443,37 +471,41 @@ def create_caption(text, index):
         log(f"Failed to create caption: {e}", "ERROR")
         return None, 0
 
-# ---------------- VIDEO CREATION ----------------
+# ---------------- VIDEO CREATION (FIXED) ----------------
 def create_video(images, script_lines, audio_paths, durations):
-    """Create final video"""
+    """Create final video - FIXED version"""
     log("Creating video...")
     
     total_duration = sum(durations)
     log(f"Total duration: {total_duration:.2f} seconds", "INFO")
     
     try:
-        # Import moviepy here to avoid dependency issues
+        # Import moviepy
         try:
             from moviepy.editor import (
                 ImageClip, AudioFileClip, CompositeVideoClip,
-                concatenate_audioclips, concatenate_videoclips, vfx, 
+                concatenate_audioclips, concatenate_videoclips,
                 CompositeAudioClip, ColorClip
             )
+            # Import vfx separately to avoid issues
+            from moviepy.video.fx import resize
         except ImportError:
             log("Installing moviepy...", "INFO")
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "moviepy"])
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "moviepy==1.0.3"])
             from moviepy.editor import (
                 ImageClip, AudioFileClip, CompositeVideoClip,
-                concatenate_audioclips, concatenate_videoclips, vfx,
+                concatenate_audioclips, concatenate_videoclips,
                 CompositeAudioClip, ColorClip
             )
+            from moviepy.video.fx import resize
         
         # Prepare background
         bg_path = images[0] if images else None
         
-        if bg_path:
+        if bg_path and os.path.exists(bg_path):
             bg_clip = ImageClip(bg_path).set_duration(total_duration)
-            bg_clip = bg_clip.fx(vfx.resize, lambda t: 1 + (ZOOM_RATE * t))
+            # Simple zoom effect using lambda
+            bg_clip = bg_clip.fl(lambda gf, t: resize(gf(t), 1 + (ZOOM_RATE * t)))
         else:
             bg_clip = ColorClip((VIDEO_W, VIDEO_H), color=(0, 0, 0)).set_duration(total_duration)
         
@@ -484,22 +516,32 @@ def create_video(images, script_lines, audio_paths, durations):
         for i, (text, dur) in enumerate(zip(script_lines, durations)):
             caption_path, caption_height = create_caption(text, i)
             
-            if caption_path:
-                caption = ImageClip(caption_path).set_duration(dur).set_start(current_time)
-                y_pos = int(VIDEO_H * 0.75)
-                caption = caption.set_position(("center", y_pos - caption_height//2))
-                caption_clips.append(caption)
+            if caption_path and os.path.exists(caption_path):
+                try:
+                    caption = ImageClip(caption_path).set_duration(dur).set_start(current_time)
+                    
+                    # Position caption (alternating positions for visual interest)
+                    y_positions = [0.72, 0.75, 0.78]
+                    y_pos = int(VIDEO_H * y_positions[i % len(y_positions)])
+                    
+                    caption = caption.set_position(("center", y_pos - caption_height//2))
+                    caption_clips.append(caption)
+                    
+                    log(f"Added caption {i+1}", "INFO")
+                except Exception as e:
+                    log(f"Error adding caption {i+1}: {e}", "WARNING")
             
             current_time += dur
         
         # Create audio track
         audio_clips = []
         for audio_path in audio_paths:
-            try:
-                audio_clip = AudioFileClip(audio_path)
-                audio_clips.append(audio_clip)
-            except:
-                pass
+            if os.path.exists(audio_path):
+                try:
+                    audio_clip = AudioFileClip(audio_path)
+                    audio_clips.append(audio_clip)
+                except Exception as e:
+                    log(f"Error loading audio {audio_path}: {e}", "WARNING")
         
         if audio_clips:
             main_audio = concatenate_audioclips(audio_clips)
@@ -507,38 +549,40 @@ def create_video(images, script_lines, audio_paths, durations):
             main_audio = AudioFileClip.silent(duration=total_duration)
         
         # Combine everything
-        if caption_clips:
-            video = CompositeVideoClip([bg_clip] + caption_clips, size=(VIDEO_W, VIDEO_H))
-        else:
-            video = bg_clip
-        
+        all_clips = [bg_clip] + caption_clips
+        video = CompositeVideoClip(all_clips, size=(VIDEO_W, VIDEO_H))
         video = video.set_audio(main_audio)
         video = video.set_fps(FPS)
+        video = video.set_duration(total_duration)
         
         # Save video
         output_path = WORKDIR / "youtube_shorts_video.mp4"
         
+        # Simple encoding settings for reliability
         video.write_videofile(
             str(output_path),
             fps=FPS,
             codec="libx264",
             audio_codec="aac",
-            threads=2,
             preset='ultrafast',
+            threads=2,
             verbose=False,
             logger=None
         )
         
-        if output_path.exists():
+        # Verify the video was created
+        if output_path.exists() and output_path.stat().st_size > 1024:
             file_size = output_path.stat().st_size / (1024 * 1024)
-            log(f"Video created: {file_size:.2f} MB", "SUCCESS")
+            log(f"✅ Video created successfully: {file_size:.2f} MB", "SUCCESS")
             return str(output_path)
         else:
-            log("Video file was not created", "ERROR")
+            log("❌ Video file was not created or is empty", "ERROR")
             return None
             
     except Exception as e:
-        log(f"Failed to create video: {e}", "ERROR")
+        log(f"❌ Failed to create video: {e}", "ERROR")
+        import traceback
+        log(traceback.format_exc(), "ERROR")
         return None
 
 # ---------------- YOUTUBE UPLOAD ----------------
@@ -546,7 +590,7 @@ def upload_to_youtube(video_path, title, description):
     """Upload video to YouTube"""
     log("Uploading to YouTube...")
     
-    # Get YouTube credentials
+    # Get credentials
     yt_client_id = os.getenv("YT_CLIENT_ID", "")
     yt_client_secret = os.getenv("YT_CLIENT_SECRET", "")
     yt_refresh_token = os.getenv("YT_REFRESH_TOKEN", "")
@@ -560,7 +604,7 @@ def upload_to_youtube(video_path, title, description):
         return None
     
     try:
-        # Import YouTube API client
+        # Import YouTube API
         try:
             from googleapiclient.discovery import build
             from googleapiclient.http import MediaFileUpload
@@ -568,7 +612,12 @@ def upload_to_youtube(video_path, title, description):
             from google.auth.transport.requests import Request
         except ImportError:
             log("Installing YouTube API client...", "INFO")
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "google-api-python-client", "google-auth", "google-auth-oauthlib"])
+            subprocess.check_call([
+                sys.executable, "-m", "pip", "install", 
+                "google-api-python-client==2.108.0",
+                "google-auth==2.23.4",
+                "google-auth-oauthlib==1.1.0"
+            ])
             from googleapiclient.discovery import build
             from googleapiclient.http import MediaFileUpload
             from google.oauth2.credentials import Credentials
@@ -589,13 +638,13 @@ def upload_to_youtube(video_path, title, description):
         # Create YouTube service
         youtube = build("youtube", "v3", credentials=creds)
         
-        # Prepare video metadata
+        # Prepare metadata
         body = {
             "snippet": {
                 "title": title[:90],
                 "description": description[:4000],
-                "tags": ["shorts", "entertainment", "news", "celebrity"],
-                "categoryId": "24"
+                "tags": ["shorts", "entertainment", "news", "celebrity", "youtubeshorts"],
+                "categoryId": "24"  # Entertainment
             },
             "status": {
                 "privacyStatus": "public",
@@ -603,15 +652,21 @@ def upload_to_youtube(video_path, title, description):
             }
         }
         
-        # Create media upload
+        # Check file size
+        file_size = os.path.getsize(video_path) / (1024 * 1024)
+        log(f"Video file size: {file_size:.2f} MB", "INFO")
+        
+        if file_size > 128:  # 128MB limit
+            log("Warning: Video may be too large for YouTube", "WARNING")
+        
+        # Upload
         media = MediaFileUpload(
             video_path,
             mimetype='video/mp4',
             resumable=True,
-            chunksize=1024*1024
+            chunksize=1024*1024  # 1MB chunks
         )
         
-        # Upload video
         request = youtube.videos().insert(
             part="snippet,status",
             body=body,
@@ -630,7 +685,7 @@ def upload_to_youtube(video_path, title, description):
                     elapsed = time.time() - upload_start
                     log(f"Upload: {progress}% ({elapsed:.1f}s)", "INFO")
                     
-                    if elapsed > 600:
+                    if elapsed > 600:  # 10 minute timeout
                         log("Upload timeout", "ERROR")
                         return None
             except Exception as e:
@@ -652,29 +707,34 @@ def generate_metadata(article):
     """Generate YouTube title and description"""
     title = article["title"]
     
+    # Extract celebrity name
     words = re.findall(r'\b[A-Z][a-z]+\b', title)
     subject = words[0] if words else "This"
     
+    # Title options
     titles = [
         f"{subject} Just Did WHAT?! 😱",
         f"Breaking News About {subject}!",
         f"You Won't Believe What {subject} Did!",
         f"{subject}: The TRUTH Revealed!",
-        f"SHOCKING News About {subject}!"
+        f"SHOCKING News About {subject}!",
+        f"What {subject} Just Did Will Blow Your Mind!",
+        f"{subject} Drops Bombshell Announcement! 💣"
     ]
     
     youtube_title = random.choice(titles)
     
+    # Hashtags
     hashtags = [
         "#shorts", "#youtubeshorts", "#entertainment",
         "#celebritynews", "#hollywood", "#breakingnews",
-        "#viral", "#trending"
+        "#viral", "#trending", "#news", "#update"
     ]
     
     random.shuffle(hashtags)
-    selected_tags = hashtags[:6]
+    selected_tags = hashtags[:7]
     
-    description = f"""🎬 {article['description'][:100]}...
+    description = f"""🎬 {article['description'][:120]}...
 
 👉 Follow for daily entertainment updates!
 🔥 Turn on notifications!
@@ -690,14 +750,14 @@ def generate_metadata(article):
     
     return youtube_title, description
 
-# ---------------- MAIN FUNCTION ----------------
+# ---------------- MAIN EXECUTION ----------------
 def main():
-    """Main execution"""
-    log("=" * 50, "INFO")
-    log("YouTube Shorts Automator", "INFO")
-    log("=" * 50, "INFO")
+    """Main execution function"""
+    log("=" * 60, "INFO")
+    log("YouTube Shorts Automator v2.0", "INFO")
+    log("=" * 60, "INFO")
     
-    # Setup system
+    # Setup
     setup_system()
     
     try:
@@ -732,7 +792,7 @@ def main():
         log("\n🎬 STEP 5: Creating video...", "INFO")
         video_path = create_video(images, script_lines, audio_paths, durations)
         
-        if not video_path or not os.path.exists(video_path):
+        if not video_path:
             log("Video creation failed", "ERROR")
             return
         
@@ -747,13 +807,13 @@ def main():
         
         if video_id:
             save_uploaded_title(article["title"])
-            log("\n✅ SUCCESS! Video uploaded!", "SUCCESS")
+            log("\n" + "=" * 60, "SUCCESS")
+            log("✅ SUCCESS! Video uploaded to YouTube!", "SUCCESS")
+            log("=" * 60, "SUCCESS")
         else:
             log("\n⚠️ Upload skipped or failed", "WARNING")
         
-        log("\n" + "=" * 50, "INFO")
-        log("Process completed!", "SUCCESS")
-        log("=" * 50, "INFO")
+        log("\n🎉 Process completed!", "INFO")
         
     except Exception as e:
         log(f"\n❌ CRITICAL ERROR: {e}", "ERROR")
