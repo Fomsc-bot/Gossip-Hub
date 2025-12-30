@@ -1,20 +1,20 @@
-name: test
+name: Test
 
 on:
   schedule:
-    # Run daily at different times (choose your preferred schedule)
-    - cron: '0 9,15,21 * * *'  # 9 AM, 3 PM, 9 PM UTC
-  workflow_dispatch:  # Allow manual trigger
+    # Run twice daily at different times
+  workflow_dispatch:  # Manual trigger
 
 jobs:
   create-shorts:
     runs-on: ubuntu-latest
+    timeout-minutes: 30  # Prevent long runs
     
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
       
-    - name: Set up Python
+    - name: Setup Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.10'
@@ -22,30 +22,17 @@ jobs:
     - name: Install system dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y ffmpeg imagemagick
-        sudo apt-get install -y fonts-dejavu-core fonts-liberation fonts-liberation2
-        sudo apt-get install -y libsm6 libxext6 libxrender-dev libgl1-mesa-glx
+        sudo apt-get install -y ffmpeg
+        sudo apt-get install -y fonts-dejavu-core fonts-liberation
+        # Create directory for uploaded titles
+        mkdir -p /tmp/youtube_shorts
         
-    - name: Cache pip packages
-      uses: actions/cache@v4
-      with:
-        path: ~/.cache/pip
-        key: ${{ runner.os }}-pip-${{ hashFiles('requirements3.txt') }}
-        restore-keys: |
-          ${{ runner.os }}-pip-
-          
-    - name: Install Python dependencies
+    - name: Install Python packages
       run: |
-        pip install --upgrade pip setuptools wheel
+        pip install --upgrade pip
         pip install -r requirements3.txt
         
-    - name: Create necessary directories
-      run: |
-        mkdir -p /tmp/work
-        mkdir -p /tmp/outtro
-        mkdir -p /tmp/music
-        
-    - name: Run YouTube Shorts Creator
+    - name: Create and upload YouTube Short
       env:
         NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
         GNEWS_API_KEY: ${{ secrets.GNEWS_API_KEY }}
@@ -54,30 +41,26 @@ jobs:
         YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
         YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
         YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
-        GITHUB_ACTIONS: true
       run: |
         python main3.py
         
-    - name: Upload video artifact (for debugging)
+    - name: Upload generated video (for debugging)
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: generated-videos
-        path: /tmp/work/*.mp4
+        name: youtube-shorts-video
+        path: /tmp/youtube_shorts/*.mp4
         retention-days: 1
         
     - name: Upload logs
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: logs
-        path: |
-          /tmp/work/*.txt
-          /tmp/work/*.log
+        name: process-logs
+        path: /tmp/youtube_shorts/*.log
+        retention-days: 1
         
-    - name: Clean up workspace
+    - name: Clean workspace
       if: always()
       run: |
-        rm -rf /tmp/work
-        rm -rf /tmp/outtro
-        rm -rf /tmp/music
+        rm -rf /tmp/youtube_shorts
