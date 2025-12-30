@@ -1,6 +1,9 @@
 name: test
 
 on:
+  schedule:
+    # Run daily at different times (choose your preferred schedule)
+    - cron: '0 9,15,21 * * *'  # 9 AM, 3 PM, 9 PM UTC
   workflow_dispatch:  # Allow manual trigger
 
 jobs:
@@ -9,23 +12,38 @@ jobs:
     
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
       
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.10'
         
     - name: Install system dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y ffmpeg python3-pip
-        sudo apt-get install -y fonts-dejavu-core fonts-liberation
+        sudo apt-get install -y ffmpeg imagemagick
+        sudo apt-get install -y fonts-dejavu-core fonts-liberation fonts-liberation2
+        sudo apt-get install -y libsm6 libxext6 libxrender-dev libgl1-mesa-glx
         
+    - name: Cache pip packages
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+          
     - name: Install Python dependencies
       run: |
-        pip install --upgrade pip
-        pip install -r requirements3.txt
+        pip install --upgrade pip setuptools wheel
+        pip install -r requirements.txt
+        
+    - name: Create necessary directories
+      run: |
+        mkdir -p /tmp/work
+        mkdir -p /tmp/outtro
+        mkdir -p /tmp/music
         
     - name: Run YouTube Shorts Creator
       env:
@@ -38,12 +56,28 @@ jobs:
         YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
         GITHUB_ACTIONS: true
       run: |
-        python main3.py
+        python main.py
         
     - name: Upload video artifact (for debugging)
       if: always()
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: generated-videos
         path: /tmp/work/*.mp4
         retention-days: 1
+        
+    - name: Upload logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: logs
+        path: |
+          /tmp/work/*.txt
+          /tmp/work/*.log
+        
+    - name: Clean up workspace
+      if: always()
+      run: |
+        rm -rf /tmp/work
+        rm -rf /tmp/outtro
+        rm -rf /tmp/music
