@@ -1,4 +1,4 @@
-name: Create YouTube Shorts
+name: test
 
 on:
   schedule:
