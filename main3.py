@@ -1,6 +1,5 @@
 import os
 import re
-import random
 import requests
 import html
 import textwrap
@@ -8,7 +7,7 @@ from pathlib import Path
 from io import BytesIO
 
 from gtts import gTTS
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 from moviepy.editor import (
     ImageClip, AudioFileClip, CompositeVideoClip,
@@ -19,18 +18,6 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
-
-# ---------------- Gemini (OPTIONAL) ----------------
-genai = None
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
-try:
-    import google.generativeai as genai_lib
-    if GEMINI_API_KEY:
-        genai = genai_lib
-        genai.configure(api_key=GEMINI_API_KEY)
-except Exception:
-    genai = None
 
 # ---------------- CONFIG ----------------
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
@@ -54,7 +41,7 @@ def log(*a):
     print("[BOT]", *a)
 
 # ---------------- Text cleanup ----------------
-def sanitize_text(s: str) -> str:
+def sanitize_text(s):
     if not s:
         return ""
     s = html.unescape(s)
@@ -106,111 +93,92 @@ def get_news_article():
             continue
     raise RuntimeError("Failed to fetch news")
 
-# ---------------- Background ----------------
+# ---------------- AUTO EMOJI SELECTION ----------------
+EMOJI_MAP = {
+    "death": "🕯️💔😢",
+    "killed": "🚨💥😱",
+    "arrest": "🚓⚖️🔥",
+    "scandal": "😳🔥📉",
+    "award": "🏆✨🎉",
+    "movie": "🎬🍿🔥",
+    "film": "🎥✨🔥",
+    "music": "🎵🎤🔥",
+    "divorce": "💔😢📰",
+    "dating": "❤️👀🔥",
+    "baby": "👶🎉❤️",
+    "viral": "🚀🔥📱",
+    "celebrity": "⭐📸🔥"
+}
+
+def select_emojis(text):
+    text = text.lower()
+    for key, emojis in EMOJI_MAP.items():
+        if key in text:
+            return emojis
+    return "🔥🎬✨"
+
+# ---------------- VIRAL 3-WORD TITLE ----------------
+def generate_title(headline):
+    words = re.findall(r'\b[A-Za-z]{4,}\b', headline)
+    core = words[:2] if len(words) >= 2 else words[:1]
+    title = " ".join(core).title()
+    return f"{title} {select_emojis(headline)}"
+
+# ---------------- VIRAL HOOK OPTIMIZATION ----------------
+def generate_hook(headline):
+    h = headline.lower()
+    if any(k in h for k in ["death", "killed", "dead"]):
+        return "This news shocked everyone."
+    if any(k in h for k in ["arrest", "charged", "court"]):
+        return "This just took a serious turn."
+    if any(k in h for k in ["scandal", "leak", "exposed"]):
+        return "Nobody expected this."
+    if any(k in h for k in ["award", "wins", "honored"]):
+        return "This moment made history."
+    return "This story is exploding online."
+
+# ---------------- Background (BLUR-FILL + PARALLAX) ----------------
 def fetch_and_prepare_bg(image_url):
     try:
-        img = Image.open(BytesIO(requests.get(image_url, timeout=15).content))
+        img = Image.open(BytesIO(requests.get(image_url, timeout=15).content)).convert("RGB")
     except Exception:
         img = Image.open(BytesIO(
             requests.get(f"https://source.unsplash.com/{VIDEO_W}x{VIDEO_H}/celebrity").content
-        ))
-    img = img.resize((VIDEO_W, VIDEO_H))
+        )).convert("RGB")
+
+    bg = img.resize((VIDEO_W, VIDEO_H), Image.LANCZOS).filter(ImageFilter.GaussianBlur(40))
+
+    img_ratio = img.width / img.height
+    target_ratio = VIDEO_W / VIDEO_H
+
+    if img_ratio > target_ratio:
+        fg_width = VIDEO_W
+        fg_height = int(fg_width / img_ratio)
+    else:
+        fg_height = VIDEO_H
+        fg_width = int(fg_height * img_ratio)
+
+    fg = img.resize((fg_width, fg_height), Image.LANCZOS)
+
+    canvas = bg.copy()
+    x = (VIDEO_W - fg_width) // 2
+    y = (VIDEO_H - fg_height) // 2
+    canvas.paste(fg, (x, y))
+
     out = WORKDIR / "bg.jpg"
-    img.save(out)
+    canvas.save(out, quality=95)
     return str(out)
-
-# ---------------- Gemini deep summarizer ----------------
-def summarize_with_gemini(headline, description, lead):
-    if not genai:
-        return None, None
-
-    prompt = f"""
-You are a professional YouTube Shorts journalist.
-
-GOAL:
-Create a HIGH-RETENTION Shorts script that explains the FULL story.
-
-SCRIPT RULES:
-- First line MUST hook instantly
-- Cover all important facts
-- Clear, human, conversational
-- 6–8 short spoken lines
-- No emojis in script
-- Final line: soft subscribe CTA
-
-TITLE RULES:
-- EXACTLY 3 words
-- Add at least 3 relevant emojis at the end
-- Include hashtags
-- Catchy but factual
-
-ARTICLE CONTENT:
-Headline:
-{headline}
-
-Description:
-{description}
-
-Article Lead:
-{lead}
-
-FORMAT (STRICT):
-TITLE:
-<one line>
-
-SCRIPT:
-<one sentence per line>
-"""
-
-    try:
-        model = genai.GenerativeModel("gemini-1.5-flash")
-        resp = model.generate_content(prompt)
-
-        if not resp or not resp.text:
-            return None, None
-
-        text = resp.text.strip()
-
-        title_match = re.search(r"TITLE:\s*(.+)", text)
-        script_match = re.search(r"SCRIPT:\s*(.+)", text, re.S)
-
-        if not title_match or not script_match:
-            return None, None
-
-        yt_title = sanitize_text(title_match.group(1))
-        lines = [
-            sanitize_text(l)
-            for l in script_match.group(1).split("\n")
-            if sanitize_text(l)
-        ]
-
-        if len(lines) < 4:
-            return None, None
-
-        return yt_title, lines[:8]
-
-    except Exception as e:
-        log("Gemini failed:", e)
-        return None, None
 
 # ---------------- Script generator ----------------
 def generate_script(headline, description, lead):
-    yt_title, lines = summarize_with_gemini(headline, description, lead)
-
-    if yt_title and lines:
-        return yt_title, lines
-
-    fallback_title = "Breaking Star Update 🔥🎬✨ #Shorts #Entertainment #Celebs"
-
-    fallback_lines = [
-        "This story is taking over social media right now.",
+    lines = [
+        generate_hook(headline),
         headline,
         description or lead or "Here’s what we know so far.",
-        "Fans and critics are reacting fast.",
+        "Fans are reacting fast.",
         "Follow for real entertainment updates."
     ]
-
-    return fallback_title, fallback_lines
+    return generate_title(headline), lines
 
 # ---------------- TTS ----------------
 def create_tts(lines):
@@ -238,10 +206,12 @@ def caption(text, i):
     img.save(out)
     return out
 
-# ---------------- Video build ----------------
-def build_video(bg, lines, tts, durs, out):
+# ---------------- Video build (CINEMATIC PARALLAX) ----------------
+def build_video(bg_path, lines, tts, durs, out):
     total = sum(durs) + 1
-    bg = ImageClip(bg).set_duration(total).fx(vfx.resize, lambda t: 1 + ZOOM_RATE * t)
+
+    bg = ImageClip(bg_path).set_duration(total).fx(vfx.resize, lambda t: 1.06 + ZOOM_RATE * t)
+    fg = ImageClip(bg_path).set_duration(total).fx(vfx.resize, lambda t: 1.02 + (ZOOM_RATE / 2) * t)
 
     clips, t = [], 0
     for i, d in enumerate(durs):
@@ -252,7 +222,7 @@ def build_video(bg, lines, tts, durs, out):
 
     audio = concatenate_audioclips([AudioFileClip(p) for p in tts])
 
-    CompositeVideoClip([bg] + clips).set_audio(audio).write_videofile(
+    CompositeVideoClip([bg, fg] + clips).set_audio(audio).write_videofile(
         str(out), fps=FPS, codec="libx264", audio_codec="aac"
     )
 
