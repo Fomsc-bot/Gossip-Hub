@@ -130,7 +130,7 @@ CONTENT_HASHTAGS = {
 
 DAILY_HASHTAG_POOLS = [
     ["#shorts", "#trending", "#viral", "#fyp"],
-    ["#shorts", "#ytshorts", "#explore", "#breakingnews"],
+    ["#shorts", "#ytshorts", "#breakingnews", "#explore"],
     ["#shorts", "#reels", "#hotnews", "#trendingnow"],
     ["#shorts", "#buzz", "#mustwatch", "#viralvideo"]
 ]
@@ -169,6 +169,46 @@ def generate_hook(headline):
         return "This moment made history."
     return "This story is exploding online."
 
+# ---------------- Background (BLUR-FILL + PARALLAX) ----------------
+def fetch_and_prepare_bg(image_url):
+    try:
+        img = Image.open(
+            BytesIO(requests.get(image_url, timeout=15).content)
+        ).convert("RGB")
+    except Exception:
+        img = Image.open(
+            BytesIO(
+                requests.get(
+                    f"https://source.unsplash.com/{VIDEO_W}x{VIDEO_H}/celebrity"
+                ).content
+            )
+        ).convert("RGB")
+
+    bg = img.resize((VIDEO_W, VIDEO_H), Image.LANCZOS).filter(
+        ImageFilter.GaussianBlur(40)
+    )
+
+    img_ratio = img.width / img.height
+    target_ratio = VIDEO_W / VIDEO_H
+
+    if img_ratio > target_ratio:
+        fg_width = VIDEO_W
+        fg_height = int(fg_width / img_ratio)
+    else:
+        fg_height = VIDEO_H
+        fg_width = int(fg_height * img_ratio)
+
+    fg = img.resize((fg_width, fg_height), Image.LANCZOS)
+
+    canvas = bg.copy()
+    x = (VIDEO_W - fg_width) // 2
+    y = (VIDEO_H - fg_height) // 2
+    canvas.paste(fg, (x, y))
+
+    out = WORKDIR / "bg.jpg"
+    canvas.save(out, quality=95)
+    return str(out)
+
 # ---------------- Script generator ----------------
 def generate_script(headline, description, lead):
     lines = [
@@ -191,6 +231,44 @@ def create_tts(lines):
         clip.close()
         paths.append(str(out))
     return paths, durs
+
+# ---------------- Video build ----------------
+def build_video(bg_path, lines, tts, durs, out):
+    total = sum(durs) + 1
+
+    bg = ImageClip(bg_path).set_duration(total).fx(
+        vfx.resize, lambda t: 1.06 + ZOOM_RATE * t
+    )
+    fg = ImageClip(bg_path).set_duration(total).fx(
+        vfx.resize, lambda t: 1.02 + (ZOOM_RATE / 2) * t
+    )
+
+    clips, t = [], 0
+    for i, d in enumerate(durs):
+        cap = ImageClip(str(caption(lines[i], i))).set_duration(d).set_start(t)
+        cap = cap.set_position(("center", VIDEO_H * 0.78))
+        clips.append(cap)
+        t += d
+
+    audio = concatenate_audioclips([AudioFileClip(p) for p in tts])
+
+    CompositeVideoClip([bg, fg] + clips).set_audio(audio).write_videofile(
+        str(out), fps=FPS, codec="libx264", audio_codec="aac"
+    )
+
+# ---------------- Captions ----------------
+def caption(text, i):
+    font = ImageFont.truetype(
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        BASE_FONT_SIZE
+    )
+    img = Image.new("RGBA", (VIDEO_W, CAPTION_HEIGHT), (0, 0, 0, 200))
+    draw = ImageDraw.Draw(img)
+    wrapped = "\n".join(textwrap.wrap(text, 28))
+    draw.multiline_text((40, 20), wrapped, font=font, fill="white")
+    out = WORKDIR / f"cap_{i}.png"
+    img.save(out)
+    return out
 
 # ---------------- YouTube upload (SHORTS SEO) ----------------
 def upload_to_youtube(video_path, title, description):
@@ -222,7 +300,11 @@ def upload_to_youtube(video_path, title, description):
     }
 
     media = MediaFileUpload(video_path, resumable=True)
-    yt.videos().insert(part="snippet,status", body=body, media_body=media).execute()
+    yt.videos().insert(
+        part="snippet,status",
+        body=body,
+        media_body=media
+    ).execute()
 
 # ---------------- MAIN ----------------
 def main():
