@@ -5,6 +5,7 @@ import html
 import textwrap
 from pathlib import Path
 from io import BytesIO
+from datetime import datetime
 
 from gtts import gTTS
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
@@ -103,9 +104,6 @@ EMOJI_MAP = {
     "movie": "🎬🍿🔥",
     "film": "🎥✨🔥",
     "music": "🎵🎤🔥",
-    "divorce": "💔😢📰",
-    "dating": "❤️👀🔥",
-    "baby": "👶🎉❤️",
     "viral": "🚀🔥📱",
     "celebrity": "⭐📸🔥"
 }
@@ -117,14 +115,48 @@ def select_emojis(text):
             return emojis
     return "🔥🎬✨"
 
-# ---------------- VIRAL 3-WORD TITLE ----------------
+# ---------------- DAILY ROTATING HASHTAGS ----------------
+CONTENT_HASHTAGS = {
+    "movie": "#movie",
+    "film": "#film",
+    "music": "#music",
+    "award": "#award",
+    "celebrity": "#celebrity",
+    "scandal": "#scandal",
+    "arrest": "#breaking",
+    "death": "#news",
+    "viral": "#viral"
+}
+
+DAILY_HASHTAG_POOLS = [
+    ["#shorts", "#trending", "#viral", "#fyp"],
+    ["#shorts", "#ytshorts", "#explore", "#breakingnews"],
+    ["#shorts", "#reels", "#hotnews", "#trendingnow"],
+    ["#shorts", "#buzz", "#mustwatch", "#viralvideo"]
+]
+
+def select_hashtags(text):
+    day_index = datetime.utcnow().timetuple().tm_yday % len(DAILY_HASHTAG_POOLS)
+    base_tags = DAILY_HASHTAG_POOLS[day_index]
+
+    content_tags = []
+    text = text.lower()
+    for key, tag in CONTENT_HASHTAGS.items():
+        if key in text:
+            content_tags.append(tag)
+
+    tags = list(dict.fromkeys(content_tags + base_tags))
+    return " ".join(tags[:5])
+
+# ---------------- VIRAL SHORTS TITLE ----------------
 def generate_title(headline):
     words = re.findall(r'\b[A-Za-z]{4,}\b', headline)
     core = words[:2] if len(words) >= 2 else words[:1]
     title = " ".join(core).title()
-    return f"{title} {select_emojis(headline)}"
+    hashtags = select_hashtags(headline)
+    return f"{title} {select_emojis(headline)} {hashtags}"[:100]
 
-# ---------------- VIRAL HOOK OPTIMIZATION ----------------
+# ---------------- VIRAL HOOK ----------------
 def generate_hook(headline):
     h = headline.lower()
     if any(k in h for k in ["death", "killed", "dead"]):
@@ -136,38 +168,6 @@ def generate_hook(headline):
     if any(k in h for k in ["award", "wins", "honored"]):
         return "This moment made history."
     return "This story is exploding online."
-
-# ---------------- Background (BLUR-FILL + PARALLAX) ----------------
-def fetch_and_prepare_bg(image_url):
-    try:
-        img = Image.open(BytesIO(requests.get(image_url, timeout=15).content)).convert("RGB")
-    except Exception:
-        img = Image.open(BytesIO(
-            requests.get(f"https://source.unsplash.com/{VIDEO_W}x{VIDEO_H}/celebrity").content
-        )).convert("RGB")
-
-    bg = img.resize((VIDEO_W, VIDEO_H), Image.LANCZOS).filter(ImageFilter.GaussianBlur(40))
-
-    img_ratio = img.width / img.height
-    target_ratio = VIDEO_W / VIDEO_H
-
-    if img_ratio > target_ratio:
-        fg_width = VIDEO_W
-        fg_height = int(fg_width / img_ratio)
-    else:
-        fg_height = VIDEO_H
-        fg_width = int(fg_height * img_ratio)
-
-    fg = img.resize((fg_width, fg_height), Image.LANCZOS)
-
-    canvas = bg.copy()
-    x = (VIDEO_W - fg_width) // 2
-    y = (VIDEO_H - fg_height) // 2
-    canvas.paste(fg, (x, y))
-
-    out = WORKDIR / "bg.jpg"
-    canvas.save(out, quality=95)
-    return str(out)
 
 # ---------------- Script generator ----------------
 def generate_script(headline, description, lead):
@@ -192,41 +192,7 @@ def create_tts(lines):
         paths.append(str(out))
     return paths, durs
 
-# ---------------- Captions ----------------
-def caption(text, i):
-    font = ImageFont.truetype(
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        BASE_FONT_SIZE
-    )
-    img = Image.new("RGBA", (VIDEO_W, CAPTION_HEIGHT), (0, 0, 0, 200))
-    draw = ImageDraw.Draw(img)
-    wrapped = "\n".join(textwrap.wrap(text, 28))
-    draw.multiline_text((40, 20), wrapped, font=font, fill="white")
-    out = WORKDIR / f"cap_{i}.png"
-    img.save(out)
-    return out
-
-# ---------------- Video build (CINEMATIC PARALLAX) ----------------
-def build_video(bg_path, lines, tts, durs, out):
-    total = sum(durs) + 1
-
-    bg = ImageClip(bg_path).set_duration(total).fx(vfx.resize, lambda t: 1.06 + ZOOM_RATE * t)
-    fg = ImageClip(bg_path).set_duration(total).fx(vfx.resize, lambda t: 1.02 + (ZOOM_RATE / 2) * t)
-
-    clips, t = [], 0
-    for i, d in enumerate(durs):
-        cap = ImageClip(str(caption(lines[i], i))).set_duration(d).set_start(t)
-        cap = cap.set_position(("center", VIDEO_H * 0.78))
-        clips.append(cap)
-        t += d
-
-    audio = concatenate_audioclips([AudioFileClip(p) for p in tts])
-
-    CompositeVideoClip([bg, fg] + clips).set_audio(audio).write_videofile(
-        str(out), fps=FPS, codec="libx264", audio_codec="aac"
-    )
-
-# ---------------- YouTube upload ----------------
+# ---------------- YouTube upload (SHORTS SEO) ----------------
 def upload_to_youtube(video_path, title, description):
     creds = Credentials(
         token=None,
@@ -241,9 +207,16 @@ def upload_to_youtube(video_path, title, description):
 
     body = {
         "snippet": {
-            "title": title[:100],
-            "description": description,
-            "tags": ["shorts", "entertainment", "news"]
+            "title": title,
+            "description": (description or "") + "\n\n#shorts",
+            "tags": [
+                "shorts",
+                "ytshorts",
+                "youtube shorts",
+                "viral shorts",
+                "trending shorts",
+                "entertainment shorts"
+            ]
         },
         "status": {"privacyStatus": "public"}
     }
