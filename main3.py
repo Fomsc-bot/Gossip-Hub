@@ -3,7 +3,6 @@ import re
 import requests
 import html
 import textwrap
-import time
 from pathlib import Path
 from io import BytesIO
 from datetime import datetime
@@ -78,22 +77,26 @@ def fetch_article_lead(url):
         return ""
 
 def get_news_article():
+    """Return first news article with a trusted image URL."""
     for fetcher in (_try_newsapi_fetch, _try_gnews_fetch):
         try:
             for art in fetcher():
                 title = sanitize_text(art.get("title", "Entertainment Update"))
                 if has_uploaded(title):
                     continue
+                img_url = art.get("urlToImage") or art.get("image")
+                if not img_url:
+                    continue  # Skip if no valid image
                 return (
                     title,
                     sanitize_text(art.get("description", "")),
-                    art.get("urlToImage") or art.get("image"),
+                    img_url,
                     art.get("url") or art.get("link"),
                     fetch_article_lead(art.get("url"))
                 )
         except Exception:
             continue
-    raise RuntimeError("Failed to fetch news")
+    raise RuntimeError("Failed to fetch news with valid image")
 
 # ---------------- AUTO EMOJI SELECTION ----------------
 EMOJI_MAP = {
@@ -170,21 +173,11 @@ def generate_hook(headline):
         return "This moment made history."
     return "This story is exploding online."
 
-# ---------------- IMAGE FETCHING WITH RETRIES ----------------
-from requests.adapters import HTTPAdapter, Retry
-
-def fetch_image_bytes(url, max_retries=3, timeout=15):
-    session = requests.Session()
-    retries = Retry(
-        total=max_retries,
-        backoff_factor=1,
-        status_forcelist=[500, 502, 503, 504]
-    )
-    session.mount('https://', HTTPAdapter(max_retries=retries))
-    session.mount('http://', HTTPAdapter(max_retries=retries))
-
+# ---------------- IMAGE FETCHING ----------------
+def fetch_image_bytes(url, timeout=15):
+    """Fetch image bytes only from trusted sources."""
     headers = {"User-Agent": "Mozilla/5.0"}
-    resp = session.get(url, headers=headers, timeout=timeout)
+    resp = requests.get(url, headers=headers, timeout=timeout)
     resp.raise_for_status()
     content_type = resp.headers.get("Content-Type", "")
     if not content_type.startswith("image/"):
@@ -196,15 +189,11 @@ def fetch_and_prepare_bg(image_url: str) -> str:
     if not image_url:
         raise RuntimeError("No image URL provided.")
 
-    for attempt in range(1, 4):
-        try:
-            img_bytes = fetch_image_bytes(image_url)
-            img = Image.open(BytesIO(img_bytes)).convert("RGB")
-            break
-        except Exception as e:
-            if attempt == 3:
-                raise RuntimeError(f"Failed to fetch image after 3 attempts: {image_url}\n{e}")
-            time.sleep(2)
+    try:
+        img_bytes = fetch_image_bytes(image_url)
+        img = Image.open(BytesIO(img_bytes)).convert("RGB")
+    except Exception as e:
+        raise RuntimeError(f"Cannot fetch image from URL: {image_url}\n{e}")
 
     # Create blurred background
     bg = img.resize((VIDEO_W, VIDEO_H), Image.LANCZOS).filter(ImageFilter.GaussianBlur(40))
@@ -291,7 +280,7 @@ def caption(text, i):
     img.save(out)
     return out
 
-# ---------------- YouTube upload (SHORTS SEO) ----------------
+# ---------------- YouTube upload ----------------
 def upload_to_youtube(video_path, title, description):
     creds = Credentials(
         token=None,
