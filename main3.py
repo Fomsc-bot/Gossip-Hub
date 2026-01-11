@@ -3,6 +3,7 @@ import re
 import requests
 import html
 import textwrap
+import time
 from pathlib import Path
 from io import BytesIO
 from datetime import datetime
@@ -169,39 +170,45 @@ def generate_hook(headline):
         return "This moment made history."
     return "This story is exploding online."
 
+# ---------------- IMAGE FETCHING WITH RETRIES ----------------
+from requests.adapters import HTTPAdapter, Retry
+
+def fetch_image_bytes(url, max_retries=3, timeout=15):
+    session = requests.Session()
+    retries = Retry(
+        total=max_retries,
+        backoff_factor=1,
+        status_forcelist=[500, 502, 503, 504]
+    )
+    session.mount('https://', HTTPAdapter(max_retries=retries))
+    session.mount('http://', HTTPAdapter(max_retries=retries))
+
+    headers = {"User-Agent": "Mozilla/5.0"}
+    resp = session.get(url, headers=headers, timeout=timeout)
+    resp.raise_for_status()
+    content_type = resp.headers.get("Content-Type", "")
+    if not content_type.startswith("image/"):
+        raise RuntimeError(f"URL did not return an image, got '{content_type}'")
+    return resp.content
+
 # ---------------- Background (BLUR-FILL + PARALLAX) ----------------
 def fetch_and_prepare_bg(image_url: str) -> str:
-    """
-    Fetches the image from the given URL, resizes for video, applies blur background,
-    and prepares a parallax-style canvas.
-
-    Raises:
-        RuntimeError: if the image cannot be fetched or opened.
-    """
     if not image_url:
         raise RuntimeError("No image URL provided.")
 
-    # Fetch image from URL
-    try:
-        headers = {"User-Agent": "Mozilla/5.0"}
-        resp = requests.get(image_url, headers=headers, timeout=15)
-        resp.raise_for_status()  # raise if HTTP status is 4xx/5xx
-
-        # Check if content-type is an image
-        content_type = resp.headers.get("Content-Type", "")
-        if not content_type.startswith("image/"):
-            raise RuntimeError(f"URL did not return an image, got '{content_type}'")
-
-        img = Image.open(BytesIO(resp.content)).convert("RGB")
-    except Exception as e:
-        raise RuntimeError(f"Failed to fetch or open image from URL: {image_url}\n{e}")
+    for attempt in range(1, 4):
+        try:
+            img_bytes = fetch_image_bytes(image_url)
+            img = Image.open(BytesIO(img_bytes)).convert("RGB")
+            break
+        except Exception as e:
+            if attempt == 3:
+                raise RuntimeError(f"Failed to fetch image after 3 attempts: {image_url}\n{e}")
+            time.sleep(2)
 
     # Create blurred background
-    bg = img.resize((VIDEO_W, VIDEO_H), Image.LANCZOS).filter(
-        ImageFilter.GaussianBlur(40)
-    )
+    bg = img.resize((VIDEO_W, VIDEO_H), Image.LANCZOS).filter(ImageFilter.GaussianBlur(40))
 
-    # Calculate foreground size for parallax
     img_ratio = img.width / img.height
     target_ratio = VIDEO_W / VIDEO_H
 
@@ -214,7 +221,6 @@ def fetch_and_prepare_bg(image_url: str) -> str:
 
     fg = img.resize((fg_width, fg_height), Image.LANCZOS)
 
-    # Paste foreground on blurred background
     canvas = bg.copy()
     x = (VIDEO_W - fg_width) // 2
     y = (VIDEO_H - fg_height) // 2
