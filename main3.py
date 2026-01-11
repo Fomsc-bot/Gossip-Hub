@@ -170,24 +170,38 @@ def generate_hook(headline):
     return "This story is exploding online."
 
 # ---------------- Background (BLUR-FILL + PARALLAX) ----------------
-def fetch_and_prepare_bg(image_url):
-    try:
-        img = Image.open(
-            BytesIO(requests.get(image_url, timeout=15).content)
-        ).convert("RGB")
-    except Exception:
-        img = Image.open(
-            BytesIO(
-                requests.get(
-                    f"https://source.unsplash.com/{VIDEO_W}x{VIDEO_H}/celebrity"
-                ).content
-            )
-        ).convert("RGB")
+def fetch_and_prepare_bg(image_url: str) -> str:
+    """
+    Fetches the image from the given URL, resizes for video, applies blur background,
+    and prepares a parallax-style canvas.
 
+    Raises:
+        RuntimeError: if the image cannot be fetched or opened.
+    """
+    if not image_url:
+        raise RuntimeError("No image URL provided.")
+
+    # Fetch image from URL
+    try:
+        headers = {"User-Agent": "Mozilla/5.0"}
+        resp = requests.get(image_url, headers=headers, timeout=15)
+        resp.raise_for_status()  # raise if HTTP status is 4xx/5xx
+
+        # Check if content-type is an image
+        content_type = resp.headers.get("Content-Type", "")
+        if not content_type.startswith("image/"):
+            raise RuntimeError(f"URL did not return an image, got '{content_type}'")
+
+        img = Image.open(BytesIO(resp.content)).convert("RGB")
+    except Exception as e:
+        raise RuntimeError(f"Failed to fetch or open image from URL: {image_url}\n{e}")
+
+    # Create blurred background
     bg = img.resize((VIDEO_W, VIDEO_H), Image.LANCZOS).filter(
         ImageFilter.GaussianBlur(40)
     )
 
+    # Calculate foreground size for parallax
     img_ratio = img.width / img.height
     target_ratio = VIDEO_W / VIDEO_H
 
@@ -200,6 +214,7 @@ def fetch_and_prepare_bg(image_url):
 
     fg = img.resize((fg_width, fg_height), Image.LANCZOS)
 
+    # Paste foreground on blurred background
     canvas = bg.copy()
     x = (VIDEO_W - fg_width) // 2
     y = (VIDEO_H - fg_height) // 2
@@ -310,10 +325,10 @@ def upload_to_youtube(video_path, title, description):
 def main():
     log("Starting pipeline...")
 
-    title, desc, img, url, lead = get_news_article()
+    title, desc, img_url, url, lead = get_news_article()
     yt_title, lines = generate_script(title, desc, lead)
 
-    bg = fetch_and_prepare_bg(img)
+    bg = fetch_and_prepare_bg(img_url)
     tts, durs = create_tts(lines)
     out = WORKDIR / "final.mp4"
 
