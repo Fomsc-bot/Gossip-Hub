@@ -216,7 +216,8 @@ def generate_fallback_script(headline: str, description: str, lead: str) -> Tupl
         "As always, we are keeping a close eye on this story. We will bring you more updates as they break.",
         "What are your thoughts on this story? Let us know in the comments below, make sure to like this video, and hit that subscribe button for more gossip updates!"
     ]
-    queries = ["entertainment", "celebrity gossip", "social media drama", "reporter microphone", "subscribe button"]
+    sources = ["article", "article", "pexels", "pexels", "pexels"]
+    queries = ["", "", "social media", "reporter microphone", "subscribe button"]
     captions = [
         "Major Entertainment Update",
         headline[:65],
@@ -225,10 +226,11 @@ def generate_fallback_script(headline: str, description: str, lead: str) -> Tupl
         "Subscribe to Gossip Hub!"
     ]
     segments = []
-    for i, (line, query, cap) in enumerate(zip(lines, queries, captions)):
+    for i, (line, src, query, cap) in enumerate(zip(lines, sources, queries, captions)):
         segments.append({
             "segment_index": i + 1,
             "narration": line,
+            "image_source": src,
             "search_query": query,
             "caption": cap
         })
@@ -252,10 +254,11 @@ Instructions:
 - Make the content detailed and informative to keep viewers hooked and get more subscribers.
 - Segment 1 MUST contain a powerful, attention-grabbing hook.
 - The final segment MUST contain a Call To Action (like, comment, and subscribe).
-- For each segment, provide:
+- For each segment, determine the best image source and provide:
   1. "narration": The script lines for the voiceover.
-  2. "search_query": A clean search query (1-3 words) to search for a relevant background photo on Pexels (e.g. "celebrity walking", "concert stage", "shocked fan", "hollywood star").
-  3. "caption": A concise, attractive caption/headline (1-2 sentences) to display as a news graphic on screen.
+  2. "image_source": Choose either "article" or "pexels". Use "article" when the narration is specifically about the celebrity, the main event, or the core gossip of the news. Use "pexels" only for general/contextual concepts (e.g. paparazzi, crowd cheering, concert lights, subscribe button) where stock photos are relevant.
+  3. "search_query": If "image_source" is "pexels", provide a clean search query (1-3 words) to search for a relevant background photo on Pexels (e.g. "paparazzi", "concert lights", "subscribe button"). If "image_source" is "article", leave this blank.
+  4. "caption": A concise, attractive caption/headline (1-2 sentences) to display as a news graphic on screen.
 - Generate a highly click-worthy, clickbait-style YouTube video title (under 90 characters).
 
 Format the response strictly as a JSON object with this schema:
@@ -265,6 +268,7 @@ Format the response strictly as a JSON object with this schema:
     {{
       "segment_index": 1,
       "narration": "...",
+      "image_source": "article" or "pexels",
       "search_query": "...",
       "caption": "..."
     }},
@@ -326,15 +330,29 @@ def fetch_pexels_image(query: str, index: int) -> str:
         log(f"Pexels fetch failed for query '{query}': {e}")
         return ""
 
-def get_segment_image(query: str, index: int, article_img_url: Optional[str]) -> str:
+def get_segment_image(image_source: str, query: str, index: int, article_img_url: Optional[str]) -> str:
     """Get the visual image for a segment with layers of fallback."""
-    # 1. Try Pexels
-    img_path = fetch_pexels_image(query, index)
-    if img_path and Path(img_path).exists():
-        return img_path
+    # 1. Try article image first if image_source is "article"
+    if image_source == "article" and article_img_url:
+        try:
+            log(f"Downloading article image for segment {index}...")
+            img_r = requests.get(article_img_url, timeout=15)
+            img_r.raise_for_status()
+            out_path = WORKDIR / f"article_image_{index}.jpg"
+            with open(out_path, "wb") as f:
+                f.write(img_r.content)
+            return str(out_path)
+        except Exception as e:
+            log(f"Failed to download article image for segment {index}: {e}")
+            
+    # 2. Try Pexels if image_source is "pexels" or if downloading the article image failed
+    if PEXELS_API_KEY and query:
+        img_path = fetch_pexels_image(query, index)
+        if img_path and Path(img_path).exists():
+            return img_path
         
-    # 2. Try download article image as fallback
-    if article_img_url:
+    # 3. Try download article image as fallback if not already tried/downloaded
+    if image_source != "article" and article_img_url:
         try:
             log(f"Downloading article image fallback for segment {index}...")
             img_r = requests.get(article_img_url, timeout=15)
@@ -346,7 +364,7 @@ def get_segment_image(query: str, index: int, article_img_url: Optional[str]) ->
         except Exception as e:
             log(f"Failed to download article fallback image: {e}")
             
-    # 3. Create a beautiful gradient image as the absolute fallback
+    # 4. Create a beautiful gradient image as the absolute fallback
     out_path = WORKDIR / f"fallback_gradient_{index}.jpg"
     img = Image.new('RGB', (VIDEO_W, VIDEO_H))
     draw = ImageDraw.Draw(img)
@@ -586,6 +604,7 @@ def build_final_video(segments: List[dict], article_img_url: Optional[str], outp
     for i, seg in enumerate(segments):
         idx = seg["segment_index"]
         text = seg["narration"]
+        image_source = seg.get("image_source", "pexels")
         query = seg["search_query"]
         caption = seg["caption"]
         
@@ -603,7 +622,7 @@ def build_final_video(segments: List[dict], article_img_url: Optional[str], outp
         tts_audio_clips.append(AudioFileClip(str(tts_path)))
         
         # 2. Curation and Visual Preparation
-        raw_img = get_segment_image(query, idx, article_img_url)
+        raw_img = get_segment_image(image_source, query, idx, article_img_url)
         composed_img = build_composite_slide(raw_img)
         
         # 3. Create Slide Clip (Ken Burns Zoom effect)
@@ -731,7 +750,7 @@ def upload_to_youtube(video_path: Path, title: str, description: str) -> str:
 # ---------------- Cleanup Temp Files ----------------
 def cleanup():
     """Remove temporary segment assets to keep workspace clean."""
-    temp_files = list(WORKDIR.glob("*.mp3")) + list(WORKDIR.glob("*.png")) + list(WORKDIR.glob("pexels_*.jpg")) + list(WORKDIR.glob("article_fallback_*.jpg")) + list(WORKDIR.glob("fallback_gradient_*.jpg")) + list(WORKDIR.glob("composed_*.jpg"))
+    temp_files = list(WORKDIR.glob("*.mp3")) + list(WORKDIR.glob("*.png")) + list(WORKDIR.glob("pexels_*.jpg")) + list(WORKDIR.glob("article_image_*.jpg")) + list(WORKDIR.glob("article_fallback_*.jpg")) + list(WORKDIR.glob("fallback_gradient_*.jpg")) + list(WORKDIR.glob("composed_*.jpg"))
     for temp_file in temp_files:
         try:
             # Don't delete background_music.mp3 or last_titles.txt
