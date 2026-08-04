@@ -45,7 +45,7 @@ def publish_to_facebook():
         sys.exit(1)
 
     log(f"==================================================")
-    log(f"Starting Facebook publishing for Page ID: {page_id}")
+    log(f"Starting Facebook direct page publishing: {page_id}")
     log(f"Target video file: {video_path}")
     log(f"Caption: {caption}")
     log(f"==================================================")
@@ -87,7 +87,7 @@ def publish_to_facebook():
                 log("ERROR: Session expired or invalid cookies. Redirected to Facebook Login page.")
                 raise RuntimeError("Facebook session expired. Please re-export cookies using export_fb_cookies.py.")
 
-            # Step 1b: Detect and click "Switch Now" button to manage the Page profile
+            # Step 1b: Detect and click "Switch Now" button to switch to Page profile
             switch_selectors = [
                 'div[role="button"]:has-text("Switch Now")',
                 'button:has-text("Switch Now")',
@@ -96,76 +96,94 @@ def publish_to_facebook():
                 'div:has-text("Switch into") div[role="button"]'
             ]
 
-            switched = False
             for sel in switch_selectors:
                 switch_btn = page.locator(sel).first
                 if switch_btn.is_visible():
-                    log(f"Found 'Switch Now' button using selector '{sel}'. Clicking to switch profile context...")
+                    log(f"Found 'Switch Now' button. Clicking to switch into Page profile...")
                     switch_btn.click()
-                    switched = True
                     page.wait_for_timeout(8000)
-                    page.screenshot(path="fb_step1_switched.png")
-                    log("Profile context switched to Gossip Hub Page.")
+                    log("Profile switched successfully!")
                     break
 
-            if not switched:
-                log("Note: 'Switch Now' banner was not visible or profile is already in Page context.")
+            page.screenshot(path="fb_step1_switched.png")
 
-            # Step 2: Try Meta Business Suite Composer
-            composer_url = f"https://business.facebook.com/latest/composer?asset_id={page_id}"
-            log(f"Step 2: Navigating to Meta Business Suite Composer: {composer_url}")
-            page.goto(composer_url, wait_until="domcontentloaded", timeout=60000)
-            page.wait_for_timeout(7000)
-
-            log(f"Business Suite URL: {page.url}")
-            page.screenshot(path="fb_step2_composer.png")
-
-            # Check for file input element in composer
-            file_inputs = page.locator('input[type="file"]')
-            file_count = file_inputs.count()
-            log(f"Found {file_count} file input elements in composer.")
-
-            if file_count > 0 and os.path.exists(video_path):
-                log(f"Step 3: Setting video file '{video_path}' into file input...")
-                file_inputs.first.set_input_files(os.path.abspath(video_path))
-                log("Waiting 15 seconds for video processing/upload...")
-                page.wait_for_timeout(15000)
-                page.screenshot(path="fb_step3_after_upload.png")
-
-            # Look for contenteditable box / text box
-            textbox = page.locator('div[contenteditable="true"], textarea[placeholder*="mind"], textarea').first
-            if textbox.is_visible():
-                log("Step 4: Filling caption into textbox...")
-                textbox.click()
-                textbox.fill(caption)
-                page.wait_for_timeout(3000)
-
-            # Look for Publish button
-            publish_selectors = [
-                'button:has-text("Publish")',
-                'div[role="button"]:has-text("Publish")',
-                'button:has-text("Post")',
-                'div[role="button"]:has-text("Post")',
-                'button[type="submit"]'
+            # Step 2: Click "Photo/video" or "What's on your mind?" button on the Page
+            log("Step 2: Looking for 'Photo/video' or post creation button on the Page...")
+            post_triggers = [
+                'span:has-text("Photo/video")',
+                'div[role="button"]:has-text("Photo/video")',
+                'span:has-text("What\'s on your mind")',
+                'div[role="button"]:has-text("What\'s on your mind")',
+                'div:has-text("Photo/video")[role="button"]'
             ]
 
-            published = False
-            for sel in publish_selectors:
-                btn = page.locator(sel).first
-                if btn.is_visible():
-                    log(f"Step 5: Clicking Publish button found via selector '{sel}'...")
-                    btn.click()
-                    published = True
-                    log("Waiting 20 seconds for publication to complete...")
-                    page.wait_for_timeout(20000)
-                    page.screenshot(path="fb_step5_after_publish.png")
+            modal_opened = False
+            for sel in post_triggers:
+                trigger = page.locator(sel).first
+                if trigger.is_visible():
+                    log(f"Clicking post creation trigger '{sel}'...")
+                    trigger.click()
+                    modal_opened = True
+                    page.wait_for_timeout(4000)
+                    page.screenshot(path="fb_step2_modal_opened.png")
                     break
 
-            if not published:
-                log("WARNING: Publish button was not automatically identified in Meta Business Suite.")
-                page.screenshot(path="fb_publish_button_missing.png")
+            if not modal_opened:
+                log("Fallback: Trying to click main content editable container directly...")
+                page.locator('div[role="main"] div[contenteditable="true"]').first.click()
+                page.wait_for_timeout(3000)
+                page.screenshot(path="fb_step2_modal_fallback.png")
+
+            # Step 3: Attach Video File
+            if os.path.exists(video_path):
+                log(f"Step 3: Uploading video file '{video_path}'...")
+                file_inputs = page.locator('input[type="file"]')
+                if file_inputs.count() > 0:
+                    file_inputs.first.set_input_files(os.path.abspath(video_path))
+                    log("Waiting 20 seconds for video upload and processing preview...")
+                    page.wait_for_timeout(20000)
+                    page.screenshot(path="fb_step3_video_attached.png")
+                else:
+                    log("WARNING: File input element not found in post modal.")
+
+            # Step 4: Type Caption
+            log("Step 4: Filling caption into post editor...")
+            editor = page.locator('div[role="dialog"] div[contenteditable="true"], div[contenteditable="true"]').first
+            if editor.is_visible():
+                editor.click()
+                editor.fill(caption)
+                page.wait_for_timeout(3000)
+                page.screenshot(path="fb_step4_caption_filled.png")
             else:
-                log("SUCCESS: Content publication flow executed!")
+                log("WARNING: Contenteditable editor element not found.")
+
+            # Step 5: Click Post / Publish
+            log("Step 5: Locating and clicking 'Post' button...")
+            post_buttons = [
+                'div[role="dialog"] div[aria-label="Post"]',
+                'div[role="dialog"] div[role="button"]:has-text("Post")',
+                'div[role="dialog"] button:has-text("Post")',
+                'div[aria-label="Post"]',
+                'button:has-text("Post")',
+                'div[role="button"]:has-text("Post")'
+            ]
+
+            posted = False
+            for sel in post_buttons:
+                btn = page.locator(sel).first
+                if btn.is_visible():
+                    log(f"Clicking 'Post' button via selector '{sel}'...")
+                    btn.click()
+                    posted = True
+                    log("Waiting 30 seconds for Facebook post publication...")
+                    page.wait_for_timeout(30000)
+                    page.screenshot(path="fb_step5_final_posted.png")
+                    log("SUCCESS: Video & Caption successfully posted to Facebook Page!")
+                    break
+
+            if not posted:
+                log("WARNING: Could not locate visible 'Post' button inside dialog.")
+                page.screenshot(path="fb_post_btn_missing.png")
 
         except Exception as err:
             log(f"ERROR during execution: {err}")
