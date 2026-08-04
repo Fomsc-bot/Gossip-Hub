@@ -124,12 +124,12 @@ def publish_to_facebook():
                     log(f"Clicking post creation trigger '{sel}'...")
                     trigger.click()
                     modal_opened = True
-                    page.wait_for_timeout(4000)
+                    page.wait_for_timeout(5000)
                     page.screenshot(path="fb_step2_modal_opened.png")
                     break
 
             if not modal_opened:
-                log("Fallback: Trying to click main content editable container directly...")
+                log("Fallback: Trying to click main post creation area...")
                 page.locator('div[role="main"] div[contenteditable="true"]').first.click()
                 page.wait_for_timeout(3000)
                 page.screenshot(path="fb_step2_modal_fallback.png")
@@ -146,26 +146,36 @@ def publish_to_facebook():
                 else:
                     log("WARNING: File input element not found in post modal.")
 
-            # Step 4: Type Caption
-            log("Step 4: Filling caption into post editor...")
-            editor = page.locator('div[role="dialog"] div[contenteditable="true"], div[contenteditable="true"]').first
+            # Step 4: Type Caption inside Create Post dialog specifically
+            log("Step 4: Filling caption into post editor inside Create Post dialog...")
+            
+            # Explicitly target the editor inside the open dialog (not comment boxes on the feed)
+            editor = page.locator('div[role="dialog"] div[contenteditable="true"]').first
+            if not editor.is_visible():
+                editor = page.locator('div[contenteditable="true"]:not([aria-label*="Comment"])').first
+
             if editor.is_visible():
-                editor.click()
-                editor.fill(caption)
+                log("Focusing dialog post editor...")
+                try:
+                    editor.click(force=True)
+                except Exception as e:
+                    log(f"Click warning: {e}, focusing via JS...")
+                    editor.evaluate("el => el.focus()")
+
+                page.keyboard.type(caption)
                 page.wait_for_timeout(3000)
                 page.screenshot(path="fb_step4_caption_filled.png")
             else:
-                log("WARNING: Contenteditable editor element not found.")
+                log("WARNING: Could not locate dialog post editor element.")
 
-            # Step 5: Click Post / Publish
-            log("Step 5: Locating and clicking 'Post' button...")
+            # Step 5: Click Post / Publish button inside dialog
+            log("Step 5: Locating and clicking 'Post' button inside dialog...")
             post_buttons = [
                 'div[role="dialog"] div[aria-label="Post"]',
                 'div[role="dialog"] div[role="button"]:has-text("Post")',
                 'div[role="dialog"] button:has-text("Post")',
-                'div[aria-label="Post"]',
-                'button:has-text("Post")',
-                'div[role="button"]:has-text("Post")'
+                'div[role="dialog"] div[aria-label="Publish"]',
+                'div[role="dialog"] button:has-text("Publish")'
             ]
 
             posted = False
@@ -173,7 +183,10 @@ def publish_to_facebook():
                 btn = page.locator(sel).first
                 if btn.is_visible():
                     log(f"Clicking 'Post' button via selector '{sel}'...")
-                    btn.click()
+                    try:
+                        btn.click(force=True)
+                    except Exception:
+                        btn.evaluate("el => el.click()")
                     posted = True
                     log("Waiting 30 seconds for Facebook post publication...")
                     page.wait_for_timeout(30000)
