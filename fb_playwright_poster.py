@@ -95,28 +95,48 @@ def publish_to_facebook():
 
             page.screenshot(path="fb_step1_switched.png")
 
-            # Step 2: Click the "Reel" button next to "Photo/video" on the feed
-            log("Step 2: Clicking the 'Reel' button on the Page feed...")
-            reel_triggers = [
-                'span:has-text("Reel")',
-                'div[role="button"]:has-text("Reel")',
-                'div:has-text("Reel")[role="button"]'
-            ]
+            # Step 2: Click the "Reel" button in the post composer (exact text, NOT the "Reels" tab)
+            log("Step 2: Clicking the 'Reel' post composer button on the Page...")
 
             reel_clicked = False
-            for sel in reel_triggers:
-                btn = page.locator(sel).first
-                if btn.is_visible():
-                    log(f"Clicking Reel button via selector '{sel}'...")
-                    btn.click()
+
+            # Strategy 1: exact text match "Reel" (avoids matching the "Reels" nav tab)
+            exact_reel = page.locator('span:text-is("Reel"), div[role="button"] span:text-is("Reel")').first
+            if exact_reel.is_visible():
+                log("Clicking exact 'Reel' button via text-is selector...")
+                exact_reel.click()
+                reel_clicked = True
+                page.wait_for_timeout(5000)
+
+            # Strategy 2: look inside the post composer container specifically
+            if not reel_clicked:
+                log("Fallback: looking for Reel button inside post creation row...")
+                post_row_reel = page.locator('div[role="main"] div[role="button"]:has-text("Reel"):not(:has-text("Reels"))').first
+                if post_row_reel.is_visible():
+                    log("Found Reel in post creation row, clicking...")
+                    post_row_reel.click()
                     reel_clicked = True
                     page.wait_for_timeout(5000)
-                    break
+
+            # Strategy 3: locate by sibling — "Photo/video" and "Reel" are next to each other
+            if not reel_clicked:
+                log("Fallback: clicking Reel button via nth-child position in post bar...")
+                # The post bar contains Photo/video, Reel, Live video as siblings
+                post_bar_btns = page.locator('div[role="main"] div[role="button"]')
+                count = post_bar_btns.count()
+                for i in range(count):
+                    btn = post_bar_btns.nth(i)
+                    label = btn.inner_text().strip()
+                    if label == "Reel":
+                        log(f"Found exact 'Reel' button at index {i}, clicking...")
+                        btn.click()
+                        reel_clicked = True
+                        page.wait_for_timeout(5000)
+                        break
 
             if not reel_clicked:
-                log("Fallback: Trying to click 'Add Reel' or 'Create Reel' button...")
-                page.locator('div[role="button"]:has-text("Create reel")').first.click()
-                page.wait_for_timeout(5000)
+                log("ERROR: Could not find the 'Reel' post composer button!")
+                raise RuntimeError("Reel post composer button not found.")
 
             page.screenshot(path="fb_step2_create_reel_modal.png")
 
