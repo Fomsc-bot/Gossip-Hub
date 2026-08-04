@@ -1,0 +1,71 @@
+name: Auto Facebook Playwright Post (No Graph API)
+
+on:
+  schedule:
+    # 7:30 AM Sri Lanka time -> 02:00 UTC
+    - cron: '00 02 * * *'
+    # 6:30 PM Sri Lanka time -> 13:00 UTC
+    - cron: '00 13 * * *'
+
+  workflow_run:
+    workflows: ["Auto Gossip Shorts (Publish Twice Daily)"]
+    types:
+      - completed
+
+  workflow_dispatch:
+
+jobs:
+  publish-facebook:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install playwright
+
+      - name: Install Playwright Browsers
+        run: |
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: Generate Video (if not present)
+        env:
+          NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
+          GNEWS_API_KEY: ${{ secrets.GNEWS_API_KEY }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          NUM_IMAGES: '5'
+        run: |
+          # If work/final.mp4 doesn't exist from a previous step, generate content
+          python -c "
+          import os, main2
+          if not os.path.exists('work/final.mp4'):
+              print('Generating video content for Facebook...')
+              title, desc, img_url, article_url, lead = main2.get_news_article()
+              lines = main2.generate_script(title, desc, lead)
+              bg = main2.fetch_and_prepare_bg(img_url)
+              tts_paths, durations = main2.create_tts_per_line(lines)
+              main2.build_final_video(bg, lines, tts_paths, durations, 'work/final.mp4')
+              with open('work/caption.txt', 'w', encoding='utf-8') as f:
+                  f.write(title)
+          " || echo "Video generation complete or already present."
+
+      - name: Run Facebook Playwright Publisher
+        env:
+          FB_COOKIES_JSON: ${{ secrets.FB_COOKIES_JSON }}
+          FB_PAGE_ID: "61584777925866"
+        run: |
+          if [ -f "work/caption.txt" ]; then
+            export CAPTION_TEXT="$(cat work/caption.txt)"
+          fi
+          python fb_playwright_poster.py
