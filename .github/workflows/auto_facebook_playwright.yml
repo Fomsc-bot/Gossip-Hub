@@ -47,18 +47,37 @@ jobs:
           NUM_IMAGES: '5'
         run: |
           python -c "
-          import os, main2
+          import os, time, main2
           os.makedirs('work', exist_ok=True)
           if not os.path.exists('work/final.mp4'):
               print('Generating video content for Facebook...')
-              title, desc, img_url, article_url, lead = main2.get_news_article()
-              lines = main2.generate_script(title, desc, lead)
-              bg = main2.fetch_and_prepare_bg(img_url)
-              tts_paths, durations = main2.create_tts_per_line(lines)
-              main2.build_final_video(bg, lines, tts_paths, durations, 'work/final.mp4')
-              with open('work/caption.txt', 'w', encoding='utf-8') as f:
-                  f.write(title)
-          " || echo "Content setup complete."
+              last_error = None
+              for attempt in range(3):
+                  try:
+                      title, desc, img_url, article_url, lead = main2.get_news_article()
+                      lines = main2.generate_script(title, desc, lead)
+                      bg = main2.fetch_and_prepare_bg(img_url)
+                      tts_paths, durations = main2.create_tts_per_line(lines)
+                      main2.build_final_video(bg, lines, tts_paths, durations, 'work/final.mp4')
+                      with open('work/caption.txt', 'w', encoding='utf-8') as f:
+                          f.write(title)
+                      print(f'Video generated successfully on attempt {attempt+1}!')
+                      last_error = None
+                      break
+                  except Exception as e:
+                      last_error = e
+                      print(f'Attempt {attempt+1}/3 failed: {e}')
+                      if attempt < 2:
+                          print('Retrying in 15 seconds...')
+                          time.sleep(15)
+              if last_error:
+                  raise RuntimeError(f'Video generation failed after 3 attempts: {last_error}')
+          else:
+              print('Video already exists, skipping generation.')
+          if not os.path.exists('work/final.mp4'):
+              raise RuntimeError('work/final.mp4 still missing after generation step!')
+          print(f'Video confirmed: {os.path.getsize(\"work/final.mp4\")} bytes')
+          "
 
       - name: Run Facebook Playwright Publisher
         env:
