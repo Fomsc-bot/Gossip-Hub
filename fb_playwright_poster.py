@@ -33,7 +33,6 @@ def publish_to_facebook():
 
     if not os.path.exists(video_path):
         log(f"WARNING: Video file '{video_path}' does not exist on disk!")
-        # Create dummy text / placeholder if no video generated
     else:
         log(f"Found video file at '{video_path}' (Size: {os.path.getsize(video_path)} bytes)")
 
@@ -88,7 +87,31 @@ def publish_to_facebook():
                 log("ERROR: Session expired or invalid cookies. Redirected to Facebook Login page.")
                 raise RuntimeError("Facebook session expired. Please re-export cookies using export_fb_cookies.py.")
 
-            # Check for Meta Business Suite composer or Facebook Page Composer
+            # Step 1b: Detect and click "Switch Now" button to manage the Page profile
+            switch_selectors = [
+                'div[role="button"]:has-text("Switch Now")',
+                'button:has-text("Switch Now")',
+                'div[aria-label="Switch Now"]',
+                'span:has-text("Switch Now")',
+                'div:has-text("Switch into") div[role="button"]'
+            ]
+
+            switched = False
+            for sel in switch_selectors:
+                switch_btn = page.locator(sel).first
+                if switch_btn.is_visible():
+                    log(f"Found 'Switch Now' button using selector '{sel}'. Clicking to switch profile context...")
+                    switch_btn.click()
+                    switched = True
+                    page.wait_for_timeout(8000)
+                    page.screenshot(path="fb_step1_switched.png")
+                    log("Profile context switched to Gossip Hub Page.")
+                    break
+
+            if not switched:
+                log("Note: 'Switch Now' banner was not visible or profile is already in Page context.")
+
+            # Step 2: Try Meta Business Suite Composer
             composer_url = f"https://business.facebook.com/latest/composer?asset_id={page_id}"
             log(f"Step 2: Navigating to Meta Business Suite Composer: {composer_url}")
             page.goto(composer_url, wait_until="domcontentloaded", timeout=60000)
@@ -139,7 +162,7 @@ def publish_to_facebook():
                     break
 
             if not published:
-                log("WARNING: Publish button was not automatically identified.")
+                log("WARNING: Publish button was not automatically identified in Meta Business Suite.")
                 page.screenshot(path="fb_publish_button_missing.png")
             else:
                 log("SUCCESS: Content publication flow executed!")
