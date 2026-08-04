@@ -33,6 +33,7 @@ def publish_to_facebook():
 
     if not os.path.exists(video_path):
         log(f"WARNING: Video file '{video_path}' does not exist on disk!")
+        sys.exit(1)
     else:
         log(f"Found video file at '{video_path}' (Size: {os.path.getsize(video_path)} bytes)")
 
@@ -45,7 +46,7 @@ def publish_to_facebook():
         sys.exit(1)
 
     log(f"==================================================")
-    log(f"Starting Facebook Video/Reel publishing: {page_id}")
+    log(f"Starting Facebook Reel creation flow: {page_id}")
     log(f"Target video file: {video_path}")
     log(f"Caption: {caption}")
     log(f"==================================================")
@@ -77,7 +78,6 @@ def publish_to_facebook():
             page.wait_for_timeout(5000)
 
             log(f"Page Title: {page.title()}")
-            log(f"Current URL: {page.url}")
             page.screenshot(path="fb_step1_page.png")
 
             # Check if redirected to login
@@ -85,147 +85,108 @@ def publish_to_facebook():
                 log("ERROR: Session expired or invalid cookies. Redirected to Facebook Login page.")
                 raise RuntimeError("Facebook session expired. Please re-export cookies using export_fb_cookies.py.")
 
-            # Step 1b: Detect and click "Switch Now" button to switch into Page profile
-            switch_selectors = [
-                'div[role="button"]:has-text("Switch Now")',
-                'button:has-text("Switch Now")',
-                'div[aria-label="Switch Now"]',
-                'span:has-text("Switch Now")',
-                'div:has-text("Switch into") div[role="button"]'
-            ]
-
-            for sel in switch_selectors:
-                switch_btn = page.locator(sel).first
-                if switch_btn.is_visible():
-                    log(f"Found 'Switch Now' button. Clicking to switch into Page profile...")
-                    switch_btn.click()
-                    page.wait_for_timeout(8000)
-                    log("Profile switched successfully!")
-                    break
+            # Step 1b: Detect and click "Switch Now" button to switch to Page profile if needed
+            switch_btn = page.locator('div[role="button"]:has-text("Switch Now"), button:has-text("Switch Now")').first
+            if switch_btn.is_visible():
+                log("Found 'Switch Now' button. Clicking to switch profile...")
+                switch_btn.click()
+                page.wait_for_timeout(8000)
+                log("Profile switched successfully!")
 
             page.screenshot(path="fb_step1_switched.png")
 
-            # Close any unexpected error popup ("Can't read files") if present
-            close_err_btn = page.locator('div[role="dialog"] div[role="button"]:has-text("Close"), div[role="dialog"] button:has-text("Close")').first
-            if close_err_btn.is_visible():
-                log("Dismissing initial error popup...")
-                close_err_btn.click()
-                page.wait_for_timeout(2000)
-
-            # Step 2: Open Reel or Video creation composer
-            log("Step 2: Looking for 'Reel' or post creation button on the Page...")
-            post_triggers = [
+            # Step 2: Click the "Reel" button next to "Photo/video" on the feed
+            log("Step 2: Clicking the 'Reel' button on the Page feed...")
+            reel_triggers = [
                 'span:has-text("Reel")',
                 'div[role="button"]:has-text("Reel")',
-                'span:has-text("What\'s on your mind")',
-                'div[role="button"]:has-text("What\'s on your mind")',
-                'span:has-text("Photo/video")',
-                'div[role="button"]:has-text("Photo/video")'
+                'div:has-text("Reel")[role="button"]'
             ]
 
-            modal_opened = False
-            for sel in post_triggers:
-                trigger = page.locator(sel).first
-                if trigger.is_visible():
-                    log(f"Clicking post creation trigger '{sel}'...")
-                    trigger.click()
-                    modal_opened = True
+            reel_clicked = False
+            for sel in reel_triggers:
+                btn = page.locator(sel).first
+                if btn.is_visible():
+                    log(f"Clicking Reel button via selector '{sel}'...")
+                    btn.click()
+                    reel_clicked = True
                     page.wait_for_timeout(5000)
-                    page.screenshot(path="fb_step2_modal_opened.png")
                     break
 
-            if not modal_opened:
-                log("Fallback: Trying to click main post creation area...")
-                page.locator('div[role="main"] div[contenteditable="true"]').first.click()
-                page.wait_for_timeout(3000)
-                page.screenshot(path="fb_step2_modal_fallback.png")
+            if not reel_clicked:
+                log("Fallback: Trying to click 'Add Reel' or 'Create Reel' button...")
+                page.locator('div[role="button"]:has-text("Create reel")').first.click()
+                page.wait_for_timeout(5000)
 
-            # Check again for error modal and close it if image-only validator complained
-            close_err_btn = page.locator('div[role="dialog"] div[role="button"]:has-text("Close"), div[role="dialog"] button:has-text("Close")').first
-            if close_err_btn.is_visible() and page.locator('text="Can\'t read files"').count() > 0:
-                log("Dismissing 'Can\'t read files' photo popup...")
-                close_err_btn.click()
-                page.wait_for_timeout(2000)
-                # Re-click Reel specifically
-                reel_btn = page.locator('span:has-text("Reel"), div[role="button"]:has-text("Reel")').first
-                if reel_btn.is_visible():
-                    reel_btn.click()
-                    page.wait_for_timeout(4000)
+            page.screenshot(path="fb_step2_create_reel_modal.png")
 
-            # Step 3: Attach Video File
-            if os.path.exists(video_path):
-                log(f"Step 3: Uploading video file '{video_path}'...")
-                file_inputs = page.locator('input[type="file"]')
-                if file_inputs.count() > 0:
-                    file_inputs.first.set_input_files(os.path.abspath(video_path))
-                    log("Waiting 25 seconds for video processing/upload preview...")
-                    page.wait_for_timeout(25000)
-                    page.screenshot(path="fb_step3_video_attached.png")
-                else:
-                    log("WARNING: File input element not found in post modal.")
+            # Step 3: Attach Video File to the "Create reel" modal (Add Video / drag and drop)
+            log(f"Step 3: Uploading video file '{video_path}' into Create reel modal...")
+            file_inputs = page.locator('div[role="dialog"] input[type="file"], input[type="file"]')
+            if file_inputs.count() > 0:
+                file_inputs.first.set_input_files(os.path.abspath(video_path))
+                log("Waiting 15 seconds for video upload and preview generation...")
+                page.wait_for_timeout(15000)
+                page.screenshot(path="fb_step3_video_uploaded.png")
+            else:
+                log("ERROR: Could not find file input element in Create reel modal!")
+                raise RuntimeError("File input missing in Create reel modal.")
 
-            # Step 4: Type Caption
-            log("Step 4: Filling caption into post editor...")
-            editor = page.locator('div[role="dialog"] div[contenteditable="true"]').first
-            if not editor.is_visible():
-                editor = page.locator('div[contenteditable="true"]:not([aria-label*="Comment"])').first
+            # Step 4: Click 'Next' (First Next button after video upload)
+            log("Step 4a: Clicking the first 'Next' button...")
+            next_btn_1 = page.locator('div[role="dialog"] div[role="button"]:has-text("Next"), div[role="dialog"] button:has-text("Next"), div[role="dialog"] div[aria-label="Next"]').first
+            if next_btn_1.is_visible():
+                next_btn_1.click(force=True)
+                page.wait_for_timeout(5000)
+                page.screenshot(path="fb_step4a_next1_clicked.png")
 
-            if editor.is_visible():
-                log("Focusing dialog post editor...")
+            # Step 4b: Click 'Next' again if a 2nd step (Audio/Edit) appears before Reel settings
+            next_btn_2 = page.locator('div[role="dialog"] div[role="button"]:has-text("Next"), div[role="dialog"] button:has-text("Next"), div[role="dialog"] div[aria-label="Next"]').first
+            if next_btn_2.is_visible() and page.locator('text="Reel settings"').count() == 0:
+                log("Step 4b: Clicking the second 'Next' button...")
+                next_btn_2.click(force=True)
+                page.wait_for_timeout(5000)
+                page.screenshot(path="fb_step4b_next2_clicked.png")
+
+            # Step 5: Fill caption in "Reel settings" ("Describe your reel...")
+            log("Step 5: Entering caption into 'Describe your reel...' text editor...")
+            page.screenshot(path="fb_step5_reel_settings.png")
+
+            describe_box = page.locator('div[role="dialog"] div[aria-label*="Describe your reel"], div[role="dialog"] div[contenteditable="true"], div[role="dialog"] textarea').first
+            if describe_box.is_visible():
+                log("Focusing 'Describe your reel...' editor...")
                 try:
-                    editor.click(force=True)
-                except Exception as e:
-                    log(f"Click warning: {e}, focusing via JS...")
-                    editor.evaluate("el => el.focus()")
+                    describe_box.click(force=True)
+                except Exception:
+                    describe_box.evaluate("el => el.focus()")
 
                 page.keyboard.type(caption)
                 page.wait_for_timeout(3000)
-                page.screenshot(path="fb_step4_caption_filled.png")
+                page.screenshot(path="fb_step5_caption_entered.png")
             else:
-                log("WARNING: Could not locate dialog post editor element.")
+                log("WARNING: Could not locate 'Describe your reel...' text box.")
 
-            # Check if there is a "Next" button (common in Reels upload flow)
-            next_btn = page.locator('div[role="dialog"] div[role="button"]:has-text("Next"), div[role="dialog"] button:has-text("Next")').first
-            if next_btn.is_visible():
-                log("Found 'Next' button in Reel composer. Clicking Next...")
-                next_btn.click()
-                page.wait_for_timeout(4000)
-                page.screenshot(path="fb_step4b_after_next.png")
-
-            # Step 5: Click Post / Share / Publish
-            log("Step 5: Locating and clicking final Post / Share / Publish button...")
-            post_buttons = [
-                'div[role="dialog"] div[aria-label="Post"]',
-                'div[role="dialog"] div[role="button"]:has-text("Post")',
-                'div[role="dialog"] button:has-text("Post")',
-                'div[role="dialog"] div[aria-label="Publish"]',
-                'div[role="dialog"] button:has-text("Publish")',
-                'div[role="dialog"] div[role="button"]:has-text("Share")',
-                'div[role="dialog"] button:has-text("Share")'
-            ]
-
-            posted = False
-            for sel in post_buttons:
-                btn = page.locator(sel).first
-                if btn.is_visible():
-                    log(f"Clicking publish button via selector '{sel}'...")
-                    try:
-                        btn.click(force=True)
-                    except Exception:
-                        btn.evaluate("el => el.click()")
-                    posted = True
-                    log("Waiting 30 seconds for Facebook video publication...")
-                    page.wait_for_timeout(30000)
-                    page.screenshot(path="fb_step5_final_posted.png")
-                    log("SUCCESS: Video & Caption successfully published to Facebook!")
-                    break
-
-            if not posted:
-                log("WARNING: Could not locate visible final Post/Share button inside dialog.")
-                page.screenshot(path="fb_post_btn_missing.png")
+            # Step 6: Press final "Post" button at the bottom left of Reel settings
+            log("Step 6: Clicking final 'Post' button...")
+            post_btn = page.locator('div[role="dialog"] div[role="button"]:has-text("Post"), div[role="dialog"] button:has-text("Post"), div[role="dialog"] div[aria-label="Post"]').first
+            
+            if post_btn.is_visible():
+                log("Clicking blue 'Post' button...")
+                try:
+                    post_btn.click(force=True)
+                except Exception:
+                    post_btn.evaluate("el => el.click()")
+                
+                log("Waiting 30 seconds for Reel publication to finish...")
+                page.wait_for_timeout(30000)
+                page.screenshot(path="fb_step6_reel_posted.png")
+                log("SUCCESS: Reel successfully posted to Facebook Page!")
+            else:
+                log("ERROR: Could not locate 'Post' button on Reel settings screen!")
+                raise RuntimeError("Post button missing on Reel settings screen.")
 
         except Exception as err:
-            log(f"ERROR during execution: {err}")
+            log(f"ERROR during Reel creation flow: {err}")
             page.screenshot(path="fb_error_fatal.png")
             raise err
         finally:
