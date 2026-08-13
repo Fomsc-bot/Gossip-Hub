@@ -401,9 +401,44 @@ def publish_to_facebook():
             if not clicked_post:
                 raise RuntimeError("Final 'Post' button could not be clicked.")
 
-            log("Waiting 40 seconds for publication to finish...")
-            page.wait_for_timeout(40000)
-            page.screenshot(path="fb_step9_published.png")
+            # ── 10. Handle Post-Publication Popups & Wait for Processing ──────────
+            log("Step 6: Checking for post-publication popups ('Not Now', 'Skip', 'Close')...")
+            try:
+                popups = page.locator(
+                    'div[role="button"]:has-text("Not Now"), '
+                    'button:has-text("Not Now"), '
+                    'div[role="button"]:has-text("Skip"), '
+                    'button:has-text("Skip")'
+                )
+                if popups.count() > 0 and popups.first.is_visible(timeout=5000):
+                    log("Found post-publication popup. Clicking 'Not Now' / 'Skip'...")
+                    popups.first.click(force=True)
+                    page.wait_for_timeout(3000)
+            except Exception:
+                pass
+
+            log("Waiting for Facebook creation modal to close & backend video encoding to complete...")
+            try:
+                page.locator('div[role="dialog"]').wait_for(state="detached", timeout=90000)
+                log("Creation modal closed! Facebook completed post submission.")
+            except Exception:
+                log("Modal detach timeout — waiting an extra 40 seconds for background chunk upload...")
+                page.wait_for_timeout(40000)
+
+            # Extra wait to ensure Facebook indexes the new Reel/post
+            log("Waiting 20 seconds for Facebook Page feed indexing...")
+            page.wait_for_timeout(20000)
+
+            # Navigate directly to the Page profile to verify post on feed
+            log(f"Navigating to Page profile (id={page_id}) to verify published video on feed...")
+            try:
+                page.goto(f"https://www.facebook.com/profile.php?id={page_id}", wait_until="domcontentloaded", timeout=60000)
+                page.wait_for_timeout(8000)
+                page.screenshot(path="fb_final_published_verification.png")
+                log("Verification screenshot saved: fb_final_published_verification.png")
+            except Exception as e:
+                log(f"Verification navigation notice: {e}")
+
             log("SUCCESS: Video successfully published to Facebook Page!")
 
         except Exception as err:
