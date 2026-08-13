@@ -28,6 +28,11 @@ import json
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 
+# Force UTF-8 output on Windows to avoid cp1252 encoding errors
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 DEFAULT_FB_PAGE_ID = "61584777925866"
 PAGE_URL = f"https://www.facebook.com/profile.php?id={DEFAULT_FB_PAGE_ID}"
 
@@ -204,9 +209,9 @@ def main():
         page.on("framenavigated", lambda _: inject_click_recorder(page))
 
         banner(
-            "BROWSER READY — YOU ARE ON THE GOSSIP HUB PAGE\n"
-            "  Now manually: Photo/video → Upload video → Caption\n"
-            "              → Next → Next → Describe → Post\n"
+            "BROWSER READY - YOU ARE ON THE GOSSIP HUB PAGE\n"
+            "  Now manually: Photo/video -> Upload video -> Caption\n"
+            "             -> Next -> Next -> Describe -> Post\n"
             "  Come back here when done and press ENTER."
         )
 
