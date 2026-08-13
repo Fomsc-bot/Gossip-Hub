@@ -79,19 +79,22 @@ jobs:
           print(f'Video confirmed: {os.path.getsize(\"work/final.mp4\")} bytes')
           "
 
-      - name: Run Facebook Playwright Publisher
+      - name: Run Facebook Playwright Publisher (Headed mode with Xvfb)
         env:
           FB_COOKIES_JSON: ${{ secrets.FB_COOKIES_JSON }}
           FB_PAGE_ID: "61584777925866"
+          HEADLESS: "false"
         run: |
           if [ -f "work/caption.txt" ]; then
             export CAPTION_TEXT="$(cat work/caption.txt)"
           fi
-          python fb_playwright_poster.py
+          xvfb-run python fb_playwright_poster.py
 
-      - name: Upload Debug Screenshots Artifact
+      - name: Upload Debug Screenshots & Video Recording Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: facebook-playwright-screenshots
-          path: "*.png"
+          name: facebook-playwright-debug-artifacts
+          path: |
+            *.png
+            video_recording/*.webm
