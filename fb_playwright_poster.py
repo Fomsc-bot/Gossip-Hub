@@ -199,12 +199,14 @@ def publish_to_facebook():
             # ── 3. Upload generated video file ──────────────────────────────────────
             log(f"Step 3: Uploading video file '{video_path}'...")
             try:
-                page.wait_for_selector('input[type="file"]', timeout=20000)
+                log("Waiting for file input element in DOM (state='attached')...")
+                page.wait_for_selector('input[type="file"]', state="attached", timeout=20000)
                 file_inputs = page.locator('input[type="file"]')
+                log(f"Found {file_inputs.count()} file input element(s). Attaching video file...")
                 file_inputs.first.set_input_files(os.path.abspath(video_path))
-                log("Video file set on input element.")
+                log("Video file set successfully on file input element!")
             except PlaywrightTimeoutError:
-                log("ERROR: File input element did not appear.")
+                log("ERROR: File input element did not appear in DOM within timeout.")
                 raise RuntimeError("File input missing after clicking Photo/video.")
 
             log("Waiting 30 seconds for video upload & preview processing...")
