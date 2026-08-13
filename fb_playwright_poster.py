@@ -1,6 +1,5 @@
 import os
 import sys
-import json
 import time
 from pathlib import Path
 from playwright.sync_api import sync_playwright
@@ -11,10 +10,28 @@ def log(*args):
     print("[FB-PLAYWRIGHT]", *args)
     sys.stdout.flush()
 
+def build_caption_with_hashtags(raw_caption: str) -> str:
+    """
+    Append up to 5 relevant hashtags to the caption.
+    Keeps total hashtags <= 5.
+    """
+    HASHTAG_POOL = [
+        "#GossipHub",
+        "#EntertainmentNews",
+        "#CelebrityNews",
+        "#Trending",
+        "#Viral",
+    ]
+    existing = [w for w in raw_caption.split() if w.startswith("#")]
+    remaining_slots = max(0, 5 - len(existing))
+    tags_to_add = [t for t in HASHTAG_POOL if t not in existing][:remaining_slots]
+    parts = [raw_caption.strip()] + tags_to_add
+    return " ".join(parts)
+
 def publish_to_facebook():
     cookies_json = os.getenv("FB_COOKIES_JSON")
     page_id = os.getenv("FB_PAGE_ID", DEFAULT_FB_PAGE_ID)
-    
+
     # Locate video file to upload
     video_path = os.getenv("VIDEO_PATH")
     if not video_path:
@@ -25,8 +42,9 @@ def publish_to_facebook():
         else:
             video_path = "work/final.mp4"
 
-    caption = os.getenv("CAPTION_TEXT", "Check out our latest gossip update!")
-    
+    raw_caption = os.getenv("CAPTION_TEXT", "Check out our latest gossip update!")
+    caption = build_caption_with_hashtags(raw_caption)
+
     if not cookies_json:
         log("ERROR: FB_COOKIES_JSON environment secret is missing!")
         sys.exit(1)
@@ -46,9 +64,9 @@ def publish_to_facebook():
         sys.exit(1)
 
     log(f"==================================================")
-    log(f"Starting Facebook Reel creation flow: {page_id}")
+    log(f"Starting Facebook Photo/Video post flow")
     log(f"Target video file: {video_path}")
-    log(f"Caption: {caption}")
+    log(f"Caption (with hashtags): {caption}")
     log(f"==================================================")
 
     with sync_playwright() as p:
@@ -71,142 +89,184 @@ def publish_to_facebook():
         page = context.new_page()
 
         try:
-            # Step 1: Open Facebook Page directly
-            page_url = f"https://www.facebook.com/profile.php?id={page_id}"
-            log(f"Step 1: Navigating to Facebook Page URL: {page_url}")
-            page.goto(page_url, wait_until="domcontentloaded", timeout=60000)
+            # ── Step 1: Navigate to facebook.com home feed ──────────────────────────
+            log("Step 1: Navigating to https://www.facebook.com/")
+            page.goto("https://www.facebook.com/", wait_until="domcontentloaded", timeout=60000)
             page.wait_for_timeout(5000)
 
             log(f"Page Title: {page.title()}")
-            page.screenshot(path="fb_step1_page.png")
+            page.screenshot(path="fb_step1_home.png")
 
             # Check if redirected to login
             if "login" in page.url.lower():
                 log("ERROR: Session expired or invalid cookies. Redirected to Facebook Login page.")
                 raise RuntimeError("Facebook session expired. Please re-export cookies using export_fb_cookies.py.")
 
-            # Step 1b: Detect and click "Switch Now" button to switch to Page profile if needed
+            # ── Step 2: Navigate to the Page profile so the composer is scoped to our Page ──
+            page_url = f"https://www.facebook.com/profile.php?id={page_id}"
+            log(f"Step 2: Navigating to Page profile: {page_url}")
+            page.goto(page_url, wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_timeout(5000)
+            page.screenshot(path="fb_step2_page_profile.png")
+
+            # Detect and click "Switch Now" if prompted
             switch_btn = page.locator('div[role="button"]:has-text("Switch Now"), button:has-text("Switch Now")').first
             if switch_btn.is_visible():
                 log("Found 'Switch Now' button. Clicking to switch profile...")
                 switch_btn.click()
                 page.wait_for_timeout(8000)
                 log("Profile switched successfully!")
+            page.screenshot(path="fb_step2_switched.png")
 
-            page.screenshot(path="fb_step1_switched.png")
+            # ── Step 3: Click the "Photo/video" button in the post composer ──────────
+            log('Step 3: Clicking "Photo/video" button in the post composer...')
 
-            # Step 2: Click the "Reel" button in the post composer (exact text, NOT the "Reels" tab)
-            log("Step 2: Clicking the 'Reel' post composer button on the Page...")
+            photo_video_clicked = False
 
-            reel_clicked = False
-
-            # Strategy 1: exact text match "Reel" (avoids matching the "Reels" nav tab)
-            exact_reel = page.locator('span:text-is("Reel"), div[role="button"] span:text-is("Reel")').first
-            if exact_reel.is_visible():
-                log("Clicking exact 'Reel' button via text-is selector...")
-                exact_reel.click()
-                reel_clicked = True
+            # Strategy 1: aria-label exact match
+            pv_btn = page.locator('[aria-label="Photo/video"]').first
+            if pv_btn.is_visible():
+                log('Clicking "Photo/video" via aria-label...')
+                pv_btn.click()
+                photo_video_clicked = True
                 page.wait_for_timeout(5000)
 
-            # Strategy 2: look inside the post composer container specifically
-            if not reel_clicked:
-                log("Fallback: looking for Reel button inside post creation row...")
-                post_row_reel = page.locator('div[role="main"] div[role="button"]:has-text("Reel"):not(:has-text("Reels"))').first
-                if post_row_reel.is_visible():
-                    log("Found Reel in post creation row, clicking...")
-                    post_row_reel.click()
-                    reel_clicked = True
+            # Strategy 2: span text match inside a role=button
+            if not photo_video_clicked:
+                pv_btn2 = page.locator('div[role="button"]:has-text("Photo/video"), span:text("Photo/video")').first
+                if pv_btn2.is_visible():
+                    log('Clicking "Photo/video" via text selector...')
+                    pv_btn2.click()
+                    photo_video_clicked = True
                     page.wait_for_timeout(5000)
 
-            # Strategy 3: locate by sibling — "Photo/video" and "Reel" are next to each other
-            if not reel_clicked:
-                log("Fallback: clicking Reel button via nth-child position in post bar...")
-                # The post bar contains Photo/video, Reel, Live video as siblings
-                post_bar_btns = page.locator('div[role="main"] div[role="button"]')
-                count = post_bar_btns.count()
+            # Strategy 3: iterate all role=button elements and match text
+            if not photo_video_clicked:
+                log("Fallback: iterating buttons to find 'Photo/video'...")
+                btns = page.locator('[role="button"]')
+                count = btns.count()
                 for i in range(count):
-                    btn = post_bar_btns.nth(i)
-                    label = btn.inner_text().strip()
-                    if label == "Reel":
-                        log(f"Found exact 'Reel' button at index {i}, clicking...")
+                    btn = btns.nth(i)
+                    label = (btn.get_attribute("aria-label") or btn.inner_text()).strip().lower()
+                    if "photo" in label and "video" in label:
+                        log(f"Found 'Photo/video' at index {i}, clicking...")
                         btn.click()
-                        reel_clicked = True
+                        photo_video_clicked = True
                         page.wait_for_timeout(5000)
                         break
 
-            if not reel_clicked:
-                log("ERROR: Could not find the 'Reel' post composer button!")
-                raise RuntimeError("Reel post composer button not found.")
+            if not photo_video_clicked:
+                log('ERROR: Could not find "Photo/video" button!')
+                raise RuntimeError('"Photo/video" button not found in post composer.')
 
-            page.screenshot(path="fb_step2_create_reel_modal.png")
+            page.screenshot(path="fb_step3_photo_video_clicked.png")
 
-            # Step 3: Attach Video File to the "Create reel" modal (Add Video / drag and drop)
-            log(f"Step 3: Uploading video file '{video_path}' into Create reel modal...")
-            file_inputs = page.locator('div[role="dialog"] input[type="file"], input[type="file"]')
+            # ── Step 4: Upload the video file ───────────────────────────────────────
+            log(f"Step 4: Uploading video file '{video_path}'...")
+            file_inputs = page.locator('input[type="file"]')
             if file_inputs.count() > 0:
                 file_inputs.first.set_input_files(os.path.abspath(video_path))
-                log("Waiting 15 seconds for video upload and preview generation...")
-                page.wait_for_timeout(15000)
-                page.screenshot(path="fb_step3_video_uploaded.png")
+                log("Waiting 20 seconds for video upload and preview generation...")
+                page.wait_for_timeout(20000)
+                page.screenshot(path="fb_step4_video_uploaded.png")
             else:
-                log("ERROR: Could not find file input element in Create reel modal!")
-                raise RuntimeError("File input missing in Create reel modal.")
+                log("ERROR: Could not find file input element after clicking Photo/video!")
+                raise RuntimeError("File input missing after Photo/video click.")
 
-            # Step 4: Click 'Next' (First Next button after video upload)
-            log("Step 4a: Clicking the first 'Next' button...")
-            next_btn_1 = page.locator('div[role="dialog"] div[role="button"]:has-text("Next"), div[role="dialog"] button:has-text("Next"), div[role="dialog"] div[aria-label="Next"]').first
-            if next_btn_1.is_visible():
-                next_btn_1.click(force=True)
-                page.wait_for_timeout(5000)
-                page.screenshot(path="fb_step4a_next1_clicked.png")
+            # ── Step 5: Enter caption + hashtags in "What's on your mind?" box ──────
+            log("Step 5: Entering caption in \"What's on your mind?\" text box...")
+            caption_box = page.locator(
+                '[aria-placeholder="What\'s on your mind, Gossip Hub?"], '
+                '[aria-placeholder*="What\'s on your mind"], '
+                'div[contenteditable="true"][data-lexical-editor="true"]'
+            ).first
 
-            # Step 4b: Click 'Next' again if a 2nd step (Audio/Edit) appears before Reel settings
-            next_btn_2 = page.locator('div[role="dialog"] div[role="button"]:has-text("Next"), div[role="dialog"] button:has-text("Next"), div[role="dialog"] div[aria-label="Next"]').first
-            if next_btn_2.is_visible() and page.locator('text="Reel settings"').count() == 0:
-                log("Step 4b: Clicking the second 'Next' button...")
-                next_btn_2.click(force=True)
-                page.wait_for_timeout(5000)
-                page.screenshot(path="fb_step4b_next2_clicked.png")
-
-            # Step 5: Fill caption in "Reel settings" ("Describe your reel...")
-            log("Step 5: Entering caption into 'Describe your reel...' text editor...")
-            page.screenshot(path="fb_step5_reel_settings.png")
-
-            describe_box = page.locator('div[role="dialog"] div[aria-label*="Describe your reel"], div[role="dialog"] div[contenteditable="true"], div[role="dialog"] textarea').first
-            if describe_box.is_visible():
-                log("Focusing 'Describe your reel...' editor...")
+            if caption_box.is_visible():
+                log("Clicking caption box and typing caption...")
                 try:
-                    describe_box.click(force=True)
+                    caption_box.click(force=True)
                 except Exception:
-                    describe_box.evaluate("el => el.focus()")
-
+                    caption_box.evaluate("el => el.focus()")
                 page.keyboard.type(caption)
                 page.wait_for_timeout(3000)
                 page.screenshot(path="fb_step5_caption_entered.png")
             else:
-                log("WARNING: Could not locate 'Describe your reel...' text box.")
+                log("WARNING: Could not locate 'What's on your mind?' text box.")
 
-            # Step 6: Press final "Post" button at the bottom left of Reel settings
-            log("Step 6: Clicking final 'Post' button...")
-            post_btn = page.locator('div[role="dialog"] div[role="button"]:has-text("Post"), div[role="dialog"] button:has-text("Post"), div[role="dialog"] div[aria-label="Post"]').first
-            
+            # ── Step 6: Click the first "Next" button ───────────────────────────────
+            log("Step 6: Clicking the first 'Next' button...")
+            next_btn_1 = page.locator(
+                '[aria-label="Next"][role="button"], '
+                'div[role="button"]:has-text("Next"), '
+                'button:has-text("Next")'
+            ).first
+            if next_btn_1.is_visible():
+                next_btn_1.click(force=True)
+                page.wait_for_timeout(5000)
+                page.screenshot(path="fb_step6_next1_clicked.png")
+            else:
+                log("WARNING: First 'Next' button not visible, trying anyway...")
+                next_btn_1.click(force=True)
+                page.wait_for_timeout(5000)
+
+            # ── Step 7: Click the second "Next" button ──────────────────────────────
+            log("Step 7: Clicking the second 'Next' button...")
+            next_btn_2 = page.locator(
+                '[aria-label="Next"][role="button"], '
+                'div[role="button"]:has-text("Next"), '
+                'button:has-text("Next")'
+            ).first
+            if next_btn_2.is_visible():
+                next_btn_2.click(force=True)
+                page.wait_for_timeout(5000)
+                page.screenshot(path="fb_step7_next2_clicked.png")
+            else:
+                log("WARNING: Second 'Next' button not visible.")
+
+            # ── Step 8: Enter description in "Describe your reel..." box ────────────
+            log('Step 8: Entering description in "Describe your reel..." text box...')
+            describe_box = page.locator(
+                '[aria-placeholder="Describe your reel..."], '
+                'div[contenteditable="true"][aria-placeholder*="Describe"]'
+            ).first
+
+            if describe_box.is_visible():
+                log('Clicking "Describe your reel..." box and typing description...')
+                try:
+                    describe_box.click(force=True)
+                except Exception:
+                    describe_box.evaluate("el => el.focus()")
+                page.keyboard.type(caption)
+                page.wait_for_timeout(3000)
+                page.screenshot(path="fb_step8_describe_entered.png")
+            else:
+                log('WARNING: Could not locate "Describe your reel..." text box.')
+
+            # ── Step 9: Click the final "Post" button ───────────────────────────────
+            log("Step 9: Clicking the final 'Post' button...")
+            post_btn = page.locator(
+                '[aria-label="Post"][role="button"], '
+                'div[role="button"]:has-text("Post"), '
+                'button:has-text("Post")'
+            ).first
+
             if post_btn.is_visible():
-                log("Clicking blue 'Post' button...")
+                log("Clicking 'Post' button...")
                 try:
                     post_btn.click(force=True)
                 except Exception:
                     post_btn.evaluate("el => el.click()")
-                
-                log("Waiting 30 seconds for Reel publication to finish...")
+
+                log("Waiting 30 seconds for post publication to finish...")
                 page.wait_for_timeout(30000)
-                page.screenshot(path="fb_step6_reel_posted.png")
-                log("SUCCESS: Reel successfully posted to Facebook Page!")
+                page.screenshot(path="fb_step9_post_submitted.png")
+                log("SUCCESS: Video successfully posted to Facebook Page!")
             else:
-                log("ERROR: Could not locate 'Post' button on Reel settings screen!")
-                raise RuntimeError("Post button missing on Reel settings screen.")
+                log("ERROR: Could not locate 'Post' button!")
+                raise RuntimeError("Post button missing on final screen.")
 
         except Exception as err:
-            log(f"ERROR during Reel creation flow: {err}")
+            log(f"ERROR during Facebook post flow: {err}")
             page.screenshot(path="fb_error_fatal.png")
             raise err
         finally:
