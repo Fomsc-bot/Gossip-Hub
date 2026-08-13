@@ -300,16 +300,18 @@ def publish_to_facebook():
         page = context.new_page()
 
         try:
-            # ── 1. Switch to Gossip Hub Page ────────────────────────────────────────
+            # ── 1. Switch to Gossip Hub Page Profile & Stay on Page Wall ──────────────
             switch_to_gossip_hub_profile(page, page_id)
 
-            # ── 2. Navigate to facebook.com home feed ────────────────────────────────
-            log("Step 1: Navigating to https://www.facebook.com/ home feed...")
-            page.goto("https://www.facebook.com/", wait_until="domcontentloaded", timeout=60000)
-            page.wait_for_timeout(5000)
+            # Ensure we are directly on the Page profile feed to post on the Page wall
+            page_profile_url = f"https://www.facebook.com/profile.php?id={page_id}"
+            log(f"Step 1: Confirmed on Gossip Hub Page profile wall: {page_profile_url}")
+            if page.url != page_profile_url:
+                page.goto(page_profile_url, wait_until="domcontentloaded", timeout=60000)
+                page.wait_for_timeout(5000)
 
             log(f"Page Title: {page.title()}")
-            page.screenshot(path="fb_step1_home.png")
+            page.screenshot(path="fb_step1_page_wall.png")
 
             # ── 3. Click "Photo/video" button ─────────────────────────────────────────
             log('Step 2: Clicking "Photo/video" button...')
