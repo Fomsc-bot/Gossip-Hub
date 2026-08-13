@@ -2,7 +2,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
 DEFAULT_FB_PAGE_ID = "61584777925866"
 
@@ -27,6 +27,69 @@ def build_caption_with_hashtags(raw_caption: str) -> str:
     tags_to_add = [t for t in HASHTAG_POOL if t not in existing][:remaining_slots]
     parts = [raw_caption.strip()] + tags_to_add
     return " ".join(parts)
+
+
+def safe_click(page, locator, label: str, timeout: int = 60000) -> bool:
+    """
+    Wait for an element to be visible, then click it.
+    Falls back to JavaScript click if force=True still fails.
+    Returns True on success, False on failure.
+    """
+    selector = locator._selector if hasattr(locator, "_selector") else str(locator)
+    try:
+        log(f"Waiting for '{label}' to be visible (timeout={timeout}ms)...")
+        locator.wait_for(state="visible", timeout=timeout)
+        log(f"'{label}' is visible. Clicking...")
+        try:
+            locator.scroll_into_view_if_needed(timeout=5000)
+        except Exception:
+            pass
+        locator.click(force=True, timeout=10000)
+        log(f"'{label}' clicked successfully.")
+        return True
+    except PlaywrightTimeoutError:
+        log(f"WARNING: '{label}' did not become visible within {timeout}ms.")
+        # Take a screenshot to aid debugging
+        page.screenshot(path=f"fb_debug_{label.lower().replace(' ', '_')}_timeout.png")
+        return False
+    except Exception as e:
+        log(f"WARNING: Normal click on '{label}' failed ({e}). Trying JS click...")
+        try:
+            locator.evaluate("el => el.click()")
+            log(f"'{label}' JS-clicked successfully.")
+            return True
+        except Exception as e2:
+            log(f"ERROR: JS click on '{label}' also failed: {e2}")
+            return False
+
+
+def type_into_editor(page, locator, text: str, label: str, timeout: int = 30000) -> bool:
+    """
+    Wait for a contenteditable/textarea editor to be visible and type text into it.
+    Returns True on success, False if not found.
+    """
+    try:
+        log(f"Waiting for '{label}' editor to be visible...")
+        locator.wait_for(state="visible", timeout=timeout)
+        log(f"'{label}' editor is visible. Typing text...")
+        try:
+            locator.click(force=True, timeout=5000)
+        except Exception:
+            try:
+                locator.evaluate("el => el.focus()")
+            except Exception:
+                pass
+        page.keyboard.type(text, delay=30)
+        log(f"Text typed into '{label}' successfully.")
+        return True
+    except PlaywrightTimeoutError:
+        log(f"WARNING: '{label}' editor not visible within {timeout}ms.")
+        page.screenshot(path=f"fb_debug_{label.lower().replace(' ', '_')}_timeout.png")
+        return False
+    except Exception as e:
+        log(f"ERROR: Failed to type into '{label}': {e}")
+        return False
+
 
 def publish_to_facebook():
     cookies_json = os.getenv("FB_COOKIES_JSON")
@@ -102,7 +165,7 @@ def publish_to_facebook():
                 log("ERROR: Session expired or invalid cookies. Redirected to Facebook Login page.")
                 raise RuntimeError("Facebook session expired. Please re-export cookies using export_fb_cookies.py.")
 
-            # ── Step 2: Navigate to the Page profile so the composer is scoped to our Page ──
+            # ── Step 2: Navigate to the Page profile ────────────────────────────────
             page_url = f"https://www.facebook.com/profile.php?id={page_id}"
             log(f"Step 2: Navigating to Page profile: {page_url}")
             page.goto(page_url, wait_until="domcontentloaded", timeout=60000)
@@ -110,12 +173,18 @@ def publish_to_facebook():
             page.screenshot(path="fb_step2_page_profile.png")
 
             # Detect and click "Switch Now" if prompted
-            switch_btn = page.locator('div[role="button"]:has-text("Switch Now"), button:has-text("Switch Now")').first
-            if switch_btn.is_visible():
-                log("Found 'Switch Now' button. Clicking to switch profile...")
-                switch_btn.click()
-                page.wait_for_timeout(8000)
-                log("Profile switched successfully!")
+            try:
+                switch_btn = page.locator(
+                    'div[role="button"]:has-text("Switch Now"), button:has-text("Switch Now")'
+                ).first
+                if switch_btn.is_visible(timeout=5000):
+                    log("Found 'Switch Now' button. Clicking to switch profile...")
+                    switch_btn.click()
+                    page.wait_for_timeout(8000)
+                    log("Profile switched successfully!")
+            except Exception:
+                log("No 'Switch Now' button found, continuing...")
+
             page.screenshot(path="fb_step2_switched.png")
 
             # ── Step 3: Click the "Photo/video" button in the post composer ──────────
@@ -123,37 +192,52 @@ def publish_to_facebook():
 
             photo_video_clicked = False
 
-            # Strategy 1: aria-label exact match
-            pv_btn = page.locator('[aria-label="Photo/video"]').first
-            if pv_btn.is_visible():
+            # Strategy 1: aria-label exact match — wait up to 15s for it to appear
+            try:
+                pv_btn = page.locator('[aria-label="Photo/video"]').first
+                pv_btn.wait_for(state="visible", timeout=15000)
                 log('Clicking "Photo/video" via aria-label...')
                 pv_btn.click()
                 photo_video_clicked = True
-                page.wait_for_timeout(5000)
+                page.wait_for_timeout(4000)
+            except PlaywrightTimeoutError:
+                log("Strategy 1 failed: aria-label 'Photo/video' not visible.")
+            except Exception as e:
+                log(f"Strategy 1 exception: {e}")
 
-            # Strategy 2: span text match inside a role=button
+            # Strategy 2: text match inside role=button
             if not photo_video_clicked:
-                pv_btn2 = page.locator('div[role="button"]:has-text("Photo/video"), span:text("Photo/video")').first
-                if pv_btn2.is_visible():
+                try:
+                    pv_btn2 = page.locator(
+                        'div[role="button"]:has-text("Photo/video")'
+                    ).first
+                    pv_btn2.wait_for(state="visible", timeout=10000)
                     log('Clicking "Photo/video" via text selector...')
                     pv_btn2.click()
                     photo_video_clicked = True
-                    page.wait_for_timeout(5000)
+                    page.wait_for_timeout(4000)
+                except Exception as e:
+                    log(f"Strategy 2 failed: {e}")
 
-            # Strategy 3: iterate all role=button elements and match text
+            # Strategy 3: iterate all visible role=button elements and match text/label
             if not photo_video_clicked:
                 log("Fallback: iterating buttons to find 'Photo/video'...")
                 btns = page.locator('[role="button"]')
                 count = btns.count()
                 for i in range(count):
                     btn = btns.nth(i)
-                    label = (btn.get_attribute("aria-label") or btn.inner_text()).strip().lower()
-                    if "photo" in label and "video" in label:
-                        log(f"Found 'Photo/video' at index {i}, clicking...")
-                        btn.click()
-                        photo_video_clicked = True
-                        page.wait_for_timeout(5000)
-                        break
+                    try:
+                        label_attr = btn.get_attribute("aria-label") or ""
+                        inner = btn.inner_text(timeout=1000)
+                        combined = (label_attr + " " + inner).strip().lower()
+                        if "photo" in combined and "video" in combined:
+                            log(f"Found 'Photo/video' at index {i}, clicking...")
+                            btn.click()
+                            photo_video_clicked = True
+                            page.wait_for_timeout(4000)
+                            break
+                    except Exception:
+                        continue
 
             if not photo_video_clicked:
                 log('ERROR: Could not find "Photo/video" button!')
@@ -163,65 +247,83 @@ def publish_to_facebook():
 
             # ── Step 4: Upload the video file ───────────────────────────────────────
             log(f"Step 4: Uploading video file '{video_path}'...")
-            file_inputs = page.locator('input[type="file"]')
-            if file_inputs.count() > 0:
+
+            # Wait for file input to appear (it may be inside a dialog now)
+            try:
+                page.wait_for_selector('input[type="file"]', timeout=20000)
+                file_inputs = page.locator('input[type="file"]')
+                log(f"Found {file_inputs.count()} file input(s). Using first...")
                 file_inputs.first.set_input_files(os.path.abspath(video_path))
-                log("Waiting 20 seconds for video upload and preview generation...")
-                page.wait_for_timeout(20000)
-                page.screenshot(path="fb_step4_video_uploaded.png")
-            else:
-                log("ERROR: Could not find file input element after clicking Photo/video!")
+            except PlaywrightTimeoutError:
+                log("ERROR: File input element did not appear within 20 seconds!")
                 raise RuntimeError("File input missing after Photo/video click.")
 
-            # ── Step 5: Enter caption + hashtags in "What's on your mind?" box ──────
+            # ── Wait for video to fully upload and Facebook to generate preview ──────
+            log("Waiting 45 seconds for video upload and processing to complete...")
+            page.wait_for_timeout(45000)
+            page.screenshot(path="fb_step4_video_uploaded.png")
+
+            # ── Step 5: Enter caption in "What's on your mind?" box ─────────────────
             log("Step 5: Entering caption in \"What's on your mind?\" text box...")
             caption_box = page.locator(
-                '[aria-placeholder="What\'s on your mind, Gossip Hub?"], '
-                '[aria-placeholder*="What\'s on your mind"], '
-                'div[contenteditable="true"][data-lexical-editor="true"]'
+                "[aria-placeholder=\"What's on your mind, Gossip Hub?\"], "
+                "[aria-placeholder*=\"What's on your mind\"], "
+                "div[contenteditable=\"true\"][data-lexical-editor=\"true\"]"
             ).first
 
-            if caption_box.is_visible():
-                log("Clicking caption box and typing caption...")
-                try:
-                    caption_box.click(force=True)
-                except Exception:
-                    caption_box.evaluate("el => el.focus()")
-                page.keyboard.type(caption)
-                page.wait_for_timeout(3000)
-                page.screenshot(path="fb_step5_caption_entered.png")
-            else:
-                log("WARNING: Could not locate 'What's on your mind?' text box.")
+            caption_typed = type_into_editor(page, caption_box, caption, "What's on your mind", timeout=30000)
+            if not caption_typed:
+                log("WARNING: Could not type caption — proceeding anyway.")
+
+            page.wait_for_timeout(2000)
+            page.screenshot(path="fb_step5_caption_entered.png")
 
             # ── Step 6: Click the first "Next" button ───────────────────────────────
-            log("Step 6: Clicking the first 'Next' button...")
+            log("Step 6: Waiting for and clicking the first 'Next' button...")
+            # Use wait_for_selector so we block until the button actually appears
+            try:
+                page.wait_for_selector(
+                    '[aria-label="Next"][role="button"], div[role="button"]:has-text("Next")',
+                    timeout=90000
+                )
+                log("First 'Next' button appeared in DOM.")
+            except PlaywrightTimeoutError:
+                log("ERROR: First 'Next' button did not appear within 90 seconds!")
+                page.screenshot(path="fb_step6_next1_timeout.png")
+                raise RuntimeError("First 'Next' button never appeared — video may still be uploading.")
+
             next_btn_1 = page.locator(
                 '[aria-label="Next"][role="button"], '
-                'div[role="button"]:has-text("Next"), '
-                'button:has-text("Next")'
+                'div[role="button"]:has-text("Next")'
             ).first
-            if next_btn_1.is_visible():
-                next_btn_1.click(force=True)
-                page.wait_for_timeout(5000)
-                page.screenshot(path="fb_step6_next1_clicked.png")
-            else:
-                log("WARNING: First 'Next' button not visible, trying anyway...")
-                next_btn_1.click(force=True)
-                page.wait_for_timeout(5000)
+            clicked_next1 = safe_click(page, next_btn_1, "First Next", timeout=30000)
+            if not clicked_next1:
+                raise RuntimeError("Could not click the first 'Next' button.")
+
+            page.wait_for_timeout(5000)
+            page.screenshot(path="fb_step6_next1_clicked.png")
 
             # ── Step 7: Click the second "Next" button ──────────────────────────────
-            log("Step 7: Clicking the second 'Next' button...")
+            log("Step 7: Waiting for and clicking the second 'Next' button...")
+            try:
+                page.wait_for_selector(
+                    '[aria-label="Next"][role="button"], div[role="button"]:has-text("Next")',
+                    timeout=30000
+                )
+                log("Second 'Next' button appeared in DOM.")
+            except PlaywrightTimeoutError:
+                log("WARNING: Second 'Next' button did not appear within 30s — may have skipped a step.")
+
             next_btn_2 = page.locator(
                 '[aria-label="Next"][role="button"], '
-                'div[role="button"]:has-text("Next"), '
-                'button:has-text("Next")'
+                'div[role="button"]:has-text("Next")'
             ).first
-            if next_btn_2.is_visible():
-                next_btn_2.click(force=True)
-                page.wait_for_timeout(5000)
-                page.screenshot(path="fb_step7_next2_clicked.png")
-            else:
-                log("WARNING: Second 'Next' button not visible.")
+            clicked_next2 = safe_click(page, next_btn_2, "Second Next", timeout=20000)
+            if not clicked_next2:
+                log("WARNING: Could not click second 'Next' — trying to proceed to Post screen.")
+
+            page.wait_for_timeout(5000)
+            page.screenshot(path="fb_step7_next2_clicked.png")
 
             # ── Step 8: Enter description in "Describe your reel..." box ────────────
             log('Step 8: Entering description in "Describe your reel..." text box...')
@@ -230,44 +332,45 @@ def publish_to_facebook():
                 'div[contenteditable="true"][aria-placeholder*="Describe"]'
             ).first
 
-            if describe_box.is_visible():
-                log('Clicking "Describe your reel..." box and typing description...')
-                try:
-                    describe_box.click(force=True)
-                except Exception:
-                    describe_box.evaluate("el => el.focus()")
-                page.keyboard.type(caption)
-                page.wait_for_timeout(3000)
-                page.screenshot(path="fb_step8_describe_entered.png")
-            else:
-                log('WARNING: Could not locate "Describe your reel..." text box.')
+            desc_typed = type_into_editor(page, describe_box, caption, "Describe your reel", timeout=20000)
+            if not desc_typed:
+                log("WARNING: Could not type into 'Describe your reel...' — proceeding to Post.")
+
+            page.wait_for_timeout(2000)
+            page.screenshot(path="fb_step8_describe_entered.png")
 
             # ── Step 9: Click the final "Post" button ───────────────────────────────
-            log("Step 9: Clicking the final 'Post' button...")
+            log("Step 9: Waiting for and clicking the 'Post' button...")
+            try:
+                page.wait_for_selector(
+                    '[aria-label="Post"][role="button"], div[role="button"]:has-text("Post")',
+                    timeout=30000
+                )
+                log("'Post' button appeared in DOM.")
+            except PlaywrightTimeoutError:
+                log("ERROR: 'Post' button did not appear within 30 seconds!")
+                page.screenshot(path="fb_step9_post_timeout.png")
+                raise RuntimeError("'Post' button never appeared on final screen.")
+
             post_btn = page.locator(
                 '[aria-label="Post"][role="button"], '
-                'div[role="button"]:has-text("Post"), '
-                'button:has-text("Post")'
+                'div[role="button"]:has-text("Post")'
             ).first
+            clicked_post = safe_click(page, post_btn, "Post", timeout=20000)
+            if not clicked_post:
+                raise RuntimeError("Could not click the 'Post' button.")
 
-            if post_btn.is_visible():
-                log("Clicking 'Post' button...")
-                try:
-                    post_btn.click(force=True)
-                except Exception:
-                    post_btn.evaluate("el => el.click()")
-
-                log("Waiting 30 seconds for post publication to finish...")
-                page.wait_for_timeout(30000)
-                page.screenshot(path="fb_step9_post_submitted.png")
-                log("SUCCESS: Video successfully posted to Facebook Page!")
-            else:
-                log("ERROR: Could not locate 'Post' button!")
-                raise RuntimeError("Post button missing on final screen.")
+            log("Waiting 45 seconds for post publication to finish...")
+            page.wait_for_timeout(45000)
+            page.screenshot(path="fb_step9_post_submitted.png")
+            log("SUCCESS: Video successfully posted to Facebook Page!")
 
         except Exception as err:
             log(f"ERROR during Facebook post flow: {err}")
-            page.screenshot(path="fb_error_fatal.png")
+            try:
+                page.screenshot(path="fb_error_fatal.png")
+            except Exception:
+                pass
             raise err
         finally:
             browser.close()
