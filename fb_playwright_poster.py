@@ -38,7 +38,7 @@ def build_caption_with_hashtags(raw_caption: str) -> str:
 def safe_click(page, locator, label: str, timeout: int = 30000) -> bool:
     """
     Wait for element to be visible and enabled, then click it.
-    Falls back to JavaScript click if force=True fails.
+    Falls back to JavaScript click if standard click fails.
     """
     try:
         log(f"Waiting for '{label}' button (timeout={timeout}ms)...")
@@ -65,29 +65,42 @@ def safe_click(page, locator, label: str, timeout: int = 30000) -> bool:
             return False
 
 
-def click_next_button(page, step_name: str, timeout: int = 40000) -> bool:
+def click_action_button(page, button_texts: list, label: str, timeout: int = 40000) -> bool:
     """
-    Polls for any visible & enabled 'Next' button (aria-disabled != 'true').
-    Retries up to timeout ms to handle step transitions & video processing delays.
+    Polls for any visible & enabled button matching given text variations or aria-labels.
+    Waits if aria-disabled='true' (indicating video processing/uploading in progress).
     """
-    log(f"Waiting for '{step_name}' button (timeout={timeout}ms)...")
+    log(f"Waiting for '{label}' button {button_texts} (timeout={timeout}ms)...")
     start_time = time.time()
+    
+    # Construct combined selector list
+    selectors = []
+    for text in button_texts:
+        selectors.extend([
+            f'div[role="dialog"] div[aria-label="{text}"][role="button"]',
+            f'div[role="dialog"] div[role="button"]:has-text("{text}")',
+            f'div[role="dialog"] button:has-text("{text}")',
+            f'div[aria-label="{text}"][role="button"]',
+            f'div[role="button"]:has-text("{text}")',
+            f'button:has-text("{text}")',
+            f'[aria-label="{text}"]'
+        ])
+    
+    selector_str = ", ".join(selectors)
+
     while (time.time() - start_time) * 1000 < timeout:
         try:
-            next_btns = page.locator(
-                'div[aria-label="Next"][role="button"], '
-                'div[role="button"]:has-text("Next"), '
-                'button:has-text("Next")'
-            )
-            count = next_btns.count()
+            btns = page.locator(selector_str)
+            count = btns.count()
             for i in range(count):
-                btn = next_btns.nth(i)
+                btn = btns.nth(i)
                 if btn.is_visible():
                     aria_disabled = btn.get_attribute("aria-disabled")
-                    if aria_disabled == "true":
-                        log(f"'{step_name}' found at index {i} but aria-disabled=true. Waiting for video processing...")
+                    disabled = btn.get_attribute("disabled")
+                    if aria_disabled == "true" or disabled is not None:
+                        log(f"'{label}' found at index {i} but disabled (video processing/uploading)... Waiting...")
                         continue
-                    log(f"'{step_name}' found at index {i} and is enabled. Clicking...")
+                    log(f"'{label}' found at index {i} and is enabled. Clicking...")
                     try:
                         btn.scroll_into_view_if_needed(timeout=2000)
                     except Exception:
@@ -96,53 +109,13 @@ def click_next_button(page, step_name: str, timeout: int = 40000) -> bool:
                         btn.click(force=True, timeout=5000)
                     except Exception:
                         btn.evaluate("el => el.click()")
-                    log(f"'{step_name}' clicked successfully!")
+                    log(f"'{label}' button clicked successfully!")
                     return True
         except Exception as e:
-            log(f"Retry in click_next_button ({step_name}): {e}")
+            log(f"Retry loop in click_action_button ({label}): {e}")
         time.sleep(2)
 
-    log(f"WARNING: '{step_name}' button not found or not clickable within {timeout}ms.")
-    return False
-
-
-def click_post_button(page, timeout: int = 40000) -> bool:
-    """
-    Polls for any visible & enabled 'Post' button (aria-disabled != 'true').
-    """
-    log(f"Waiting for 'Post' button (timeout={timeout}ms)...")
-    start_time = time.time()
-    while (time.time() - start_time) * 1000 < timeout:
-        try:
-            post_btns = page.locator(
-                'div[aria-label="Post"][role="button"], '
-                'div[role="button"]:has-text("Post"), '
-                'button:has-text("Post")'
-            )
-            count = post_btns.count()
-            for i in range(count):
-                btn = post_btns.nth(i)
-                if btn.is_visible():
-                    aria_disabled = btn.get_attribute("aria-disabled")
-                    if aria_disabled == "true":
-                        log(f"'Post' found at index {i} but aria-disabled=true. Waiting...")
-                        continue
-                    log(f"'Post' found at index {i} and is enabled. Clicking...")
-                    try:
-                        btn.scroll_into_view_if_needed(timeout=2000)
-                    except Exception:
-                        pass
-                    try:
-                        btn.click(force=True, timeout=5000)
-                    except Exception:
-                        btn.evaluate("el => el.click()")
-                    log("'Post' button clicked successfully!")
-                    return True
-        except Exception as e:
-            log(f"Retry in click_post_button: {e}")
-        time.sleep(2)
-
-    log(f"WARNING: 'Post' button not clickable within {timeout}ms.")
+    log(f"WARNING: '{label}' button not found or not clickable within {timeout}ms.")
     return False
 
 
@@ -172,25 +145,51 @@ def type_into_editor(page, locator, text: str, label: str, timeout: int = 30000)
         return False
 
 
+def handle_popups(page):
+    """
+    Dismiss common Facebook post-publication or promotional popups.
+    """
+    log("Checking for popups ('Not Now', 'Skip', 'Close', 'Cancel')...")
+    popup_texts = ["Not Now", "Skip", "Close", "Cancel", "No Thanks", "Maybe Later"]
+    for text in popup_texts:
+        try:
+            btn = page.locator(
+                f'div[role="dialog"] div[role="button"]:has-text("{text}"), '
+                f'div[role="dialog"] button:has-text("{text}"), '
+                f'div[role="button"]:has-text("{text}"), '
+                f'button:has-text("{text}")'
+            ).first
+            if btn.is_visible(timeout=2000):
+                log(f"Dismissing popup: '{text}'...")
+                btn.click(force=True)
+                page.wait_for_timeout(2000)
+        except Exception:
+            pass
+
+
 def switch_to_gossip_hub_profile(page, page_id: str):
     """
     Navigates to the Gossip Hub page URL and switches profile if needed.
+    Raises RuntimeError if session expired or checkpoint hit.
     """
-    log(f"Step 0: Navigating to Page profile to ensure switched: https://www.facebook.com/profile.php?id={page_id}")
-    page.goto(f"https://www.facebook.com/profile.php?id={page_id}", wait_until="domcontentloaded", timeout=60000)
+    page_url = f"https://www.facebook.com/profile.php?id={page_id}"
+    log(f"Step 0: Navigating to Page profile: {page_url}")
+    page.goto(page_url, wait_until="domcontentloaded", timeout=60000)
     page.wait_for_timeout(6000)
     page.screenshot(path="fb_step0_page_profile.png")
 
-    if "login" in page.url.lower():
-        log("ERROR: Session expired or invalid cookies. Redirected to Login.")
-        raise RuntimeError("Facebook session expired. Re-export cookies using export_fb_cookies.py.")
+    current_url = page.url.lower()
+    if "login" in current_url or "checkpoint" in current_url or "two_factor" in current_url:
+        log(f"ERROR: Session invalid/expired or security checkpoint hit! Current URL: {page.url}")
+        raise RuntimeError("Facebook session expired or hit security checkpoint. Re-export cookies using export_fb_cookies.py.")
 
     switch_selectors = [
         'div[role="button"]:has-text("Switch Now")',
         'button:has-text("Switch Now")',
         'div[role="button"]:has-text("Switch")',
         'button:has-text("Switch")',
-        '[aria-label*="Switch into Gossip Hub"]'
+        '[aria-label*="Switch into Gossip Hub"]',
+        '[aria-label*="Switch profile"]'
     ]
 
     switched = False
@@ -225,9 +224,10 @@ def switch_to_gossip_hub_profile(page, page_id: str):
                     log("Found Gossip Hub in profile menu. Clicking to switch...")
                     gh_item.click(force=True)
                     page.wait_for_timeout(8000)
+                    switched = True
                     log("Switched profile via menu!")
         except Exception as e:
-            log(f"Account menu check complete ({e}).")
+            log(f"Account menu check notice: {e}")
 
     page.screenshot(path="fb_step0_switched_confirm.png")
 
@@ -236,7 +236,6 @@ def publish_to_facebook():
     cookies_json = os.getenv("FB_COOKIES_JSON")
     page_id = os.getenv("FB_PAGE_ID", DEFAULT_FB_PAGE_ID)
 
-    # Allow controlling headless mode via HEADLESS environment variable (default: false for headed GUI run)
     headless_env = os.getenv("HEADLESS", "false").lower()
     is_headless = headless_env == "true"
 
@@ -257,7 +256,7 @@ def publish_to_facebook():
         sys.exit(1)
 
     if not os.path.exists(video_path):
-        log(f"WARNING: Video file '{video_path}' does not exist on disk!")
+        log(f"ERROR: Video file '{video_path}' does not exist on disk!")
         sys.exit(1)
     else:
         log(f"Found video file at '{video_path}' (Size: {os.path.getsize(video_path)} bytes)")
@@ -270,10 +269,10 @@ def publish_to_facebook():
         sys.exit(1)
 
     log(f"==================================================")
-    log(f"Starting Facebook Photo/Video Workflow: Page {page_id}")
+    log(f"Starting Facebook Video Workflow: Page ID {page_id}")
     log(f"Playwright Headless Mode: {is_headless}")
     log(f"Target video file: {video_path}")
-    log(f"Caption (max 5 hashtags): {caption}")
+    log(f"Caption: {caption}")
     log(f"==================================================")
 
     video_recording_dir = Path("video_recording")
@@ -300,146 +299,149 @@ def publish_to_facebook():
         page = context.new_page()
 
         try:
-            # ── 1. Switch to Gossip Hub Page Profile & Stay on Page Wall ──────────────
+            # ── Step 1: Switch to Page Profile & Confirm Wall Access ──────────────────
             switch_to_gossip_hub_profile(page, page_id)
 
-            # Ensure we are directly on the Page profile feed to post on the Page wall
             page_profile_url = f"https://www.facebook.com/profile.php?id={page_id}"
-            log(f"Step 1: Confirmed on Gossip Hub Page profile wall: {page_profile_url}")
-            if page.url != page_profile_url:
-                page.goto(page_profile_url, wait_until="domcontentloaded", timeout=60000)
-                page.wait_for_timeout(5000)
+            log(f"Step 1: Navigating to Page wall: {page_profile_url}")
+            page.goto(page_profile_url, wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_timeout(5000)
+            handle_popups(page)
 
             log(f"Page Title: {page.title()}")
             page.screenshot(path="fb_step1_page_wall.png")
 
-            # ── 3. Click "Photo/video" button ─────────────────────────────────────────
+            # ── Step 2: Click "Photo/video" button ────────────────────────────────────
             log('Step 2: Clicking "Photo/video" button...')
             photo_video_btn = page.locator(
                 'div[aria-label="Photo/video"][role="button"], '
                 '[aria-label="Photo/video"], '
-                'div[role="button"]:has-text("Photo/video")'
+                'div[role="button"]:has-text("Photo/video"), '
+                'span:has-text("Photo/video")'
             ).first
 
             clicked_pv = safe_click(page, photo_video_btn, "Photo/video", timeout=30000)
             if not clicked_pv:
-                raise RuntimeError('"Photo/video" button not found or could not be clicked.')
+                log("Primary 'Photo/video' button click missed. Trying alternative post creation trigger...")
+                create_post_box = page.locator(
+                    'div[role="button"]:has-text("What\'s on your mind"), '
+                    'div[aria-label*="Create a post"], '
+                    'div[role="textbox"]'
+                ).first
+                if not safe_click(page, create_post_box, "Create Post Box", timeout=15000):
+                    raise RuntimeError('"Photo/video" or post creation box not found on Facebook Page wall.')
 
             page.wait_for_timeout(4000)
             page.screenshot(path="fb_step3_photo_video_modal.png")
 
-            # ── 4. Upload generated video file ──────────────────────────────────────
-            log(f"Step 3: Uploading video file '{video_path}'...")
+            # ── Step 3: Attach Video File ─────────────────────────────────────────────
+            log(f"Step 3: Attaching video file '{video_path}' to file input...")
             try:
-                log("Waiting for file input element in DOM (state='attached')...")
-                page.wait_for_selector('input[type="file"]', state="attached", timeout=20000)
-                file_inputs = page.locator('input[type="file"]')
-                log(f"Found {file_inputs.count()} file input element(s). Attaching video file...")
+                log("Waiting for file input in modal DOM...")
+                file_input_selector = 'div[role="dialog"] input[type="file"], input[type="file"][accept*="video"], input[type="file"]'
+                page.wait_for_selector(file_input_selector, state="attached", timeout=25000)
+                file_inputs = page.locator(file_input_selector)
+                log(f"Found {file_inputs.count()} file input element(s). Setting video path...")
                 file_inputs.first.set_input_files(os.path.abspath(video_path))
-                log("Video file attached successfully!")
+                log("Video file successfully attached to input!")
             except PlaywrightTimeoutError:
                 log("ERROR: File input element did not appear in DOM within timeout.")
-                raise RuntimeError("File input missing after clicking Photo/video.")
+                raise RuntimeError("File input element missing after opening post creation modal.")
 
-            log("Waiting 30 seconds for video upload & preview processing...")
-            page.wait_for_timeout(30000)
+            log("Waiting 20 seconds for initial video upload & preview chunking...")
+            page.wait_for_timeout(20000)
             page.screenshot(path="fb_step4_video_uploaded.png")
 
-            # ── 5. Enter Caption in text box ─────────────────────────────────────────
-            log("Step 4: Entering caption into text box...")
+            # ── Step 4: Enter Caption Text ───────────────────────────────────────────
+            log("Step 4: Entering caption into post text editor...")
             caption_box = page.locator(
+                'div[role="dialog"] div[contenteditable="true"], '
                 'div[aria-placeholder*="What\'s on your mind"][role="textbox"], '
                 'div[aria-placeholder="What\'s on your mind, Gossip Hub?"][role="textbox"], '
                 'div[contenteditable="true"][data-lexical-editor="true"], '
                 'div[contenteditable="true"][role="textbox"]'
             ).first
 
-            type_into_editor(page, caption_box, caption, "What's on your mind", timeout=20000)
+            typed_caption = type_into_editor(page, caption_box, caption, "Caption Editor", timeout=20000)
+            if not typed_caption:
+                log("WARNING: Could not type into primary caption editor. Trying keyboard fallback...")
+                try:
+                    page.keyboard.type(caption, delay=20)
+                except Exception as e:
+                    log(f"Fallback typing notice: {e}")
+
             page.wait_for_timeout(3000)
             page.screenshot(path="fb_step5_caption_entered.png")
 
-            # ── 6. Step 5a: Click First 'Next' Button ───────────────────────────────
-            log("Step 5a: Pressing first 'Next' button...")
-            clicked_next1 = click_next_button(page, "First Next", timeout=40000)
-            if not clicked_next1:
-                log("First 'Next' button not found. Checking if direct 'Post' button exists...")
-                clicked_direct_post = click_post_button(page, timeout=10000)
-                if clicked_direct_post:
-                    log("Direct 'Post' button clicked!")
-                    page.wait_for_timeout(40000)
-                    page.screenshot(path="fb_step9_published.png")
-                    log("SUCCESS: Video successfully published to Facebook Page!")
-                    return
-                else:
-                    raise RuntimeError("Neither 'Next' nor 'Post' button found.")
+            # ── Step 5: Handle Post / Publish / Next Workflow ─────────────────────────
+            log("Step 5: Publishing post / reel (checking for Next, Post, Publish, Share buttons)...")
+            
+            # Check if direct "Post" or "Publish" or "Share" button exists in modal
+            pub_success = click_action_button(page, ["Post", "Publish", "Share", "Share now"], "Post/Publish", timeout=25000)
 
-            page.wait_for_timeout(6000)
-            page.screenshot(path="fb_step6_next1_pressed.png")
+            if not pub_success:
+                log("Direct 'Post/Publish' button not ready or modal is multi-step (Reels flow). Trying 'Next'...")
+                clicked_next1 = click_action_button(page, ["Next"], "First Next Step", timeout=30000)
+                if clicked_next1:
+                    page.wait_for_timeout(4000)
+                    page.screenshot(path="fb_step6_next1.png")
 
-            # ── 7. Step 5b: Click Second 'Next' Button ──────────────────────────────
-            log("Step 5b: Pressing second 'Next' button...")
-            clicked_next2 = click_next_button(page, "Second Next", timeout=30000)
-            if not clicked_next2:
-                log("WARNING: Second 'Next' button not visible within timeout — trying to proceed to Describe step...")
+                    # Step 5b: Try Second Next or Publish/Post
+                    clicked_next2 = click_action_button(page, ["Next"], "Second Next Step", timeout=20000)
+                    if clicked_next2:
+                        page.wait_for_timeout(4000)
+                        page.screenshot(path="fb_step7_next2.png")
 
-            page.wait_for_timeout(6000)
-            page.screenshot(path="fb_step7_next2_pressed.png")
+                    # Step 5c: Reel description editor check
+                    describe_box = page.locator(
+                        'div[aria-placeholder*="Describe"][role="textbox"], '
+                        'div[contenteditable="true"][aria-placeholder*="Describe"]'
+                    ).first
+                    if describe_box.is_visible(timeout=3000):
+                        type_into_editor(page, describe_box, caption, "Describe Reel", timeout=10000)
 
-            # ── 8. Step 5c: Enter text in 'Describe your reel...' section ───────────
-            log('Step 5c: Entering text in "Describe your reel..." section...')
-            describe_box = page.locator(
-                'div[aria-placeholder="Describe your reel..."][role="textbox"], '
-                'div[aria-placeholder*="Describe"][role="textbox"], '
-                'div[contenteditable="true"][aria-placeholder*="Describe"]'
-            ).first
+                    # Step 5d: Click final Post/Publish/Share button
+                    pub_success = click_action_button(page, ["Post", "Publish", "Share", "Share now"], "Final Post/Publish", timeout=40000)
 
-            type_into_editor(page, describe_box, caption, "Describe your reel", timeout=20000)
-            page.wait_for_timeout(3000)
-            page.screenshot(path="fb_step8_describe_entered.png")
+            if not pub_success:
+                raise RuntimeError("Could not find or click an active 'Post', 'Publish', or 'Share' button.")
 
-            # ── 9. Step 5d: Click final 'Post' Button ───────────────────────────────
-            log("Step 5d: Pressing final 'Post' button...")
-            clicked_post = click_post_button(page, timeout=40000)
-            if not clicked_post:
-                raise RuntimeError("Final 'Post' button could not be clicked.")
+            log("Post/Publish button successfully clicked!")
+            page.screenshot(path="fb_step8_published_click.png")
 
-            # ── 10. Handle Post-Publication Popups & Wait for Processing ──────────
-            log("Step 6: Checking for post-publication popups ('Not Now', 'Skip', 'Close')...")
+            # ── Step 6: Wait for Background Video Upload & Server Encoding ────────────
+            log("Step 6: Waiting for Facebook post submission & video upload completion...")
+            handle_popups(page)
+
             try:
-                popups = page.locator(
-                    'div[role="button"]:has-text("Not Now"), '
-                    'button:has-text("Not Now"), '
-                    'div[role="button"]:has-text("Skip"), '
-                    'button:has-text("Skip")'
-                )
-                if popups.count() > 0 and popups.first.is_visible(timeout=5000):
-                    log("Found post-publication popup. Clicking 'Not Now' / 'Skip'...")
-                    popups.first.click(force=True)
-                    page.wait_for_timeout(3000)
-            except Exception:
-                pass
-
-            log("Waiting for Facebook creation modal to close & backend video encoding to complete...")
-            try:
+                log("Waiting for creation dialog to detach...")
                 page.locator('div[role="dialog"]').wait_for(state="detached", timeout=90000)
-                log("Creation modal closed! Facebook completed post submission.")
+                log("Creation dialog detached! Post submitted to Facebook.")
             except Exception:
-                log("Modal detach timeout — waiting an extra 40 seconds for background chunk upload...")
+                log("Dialog detach wait timed out — holding browser open for background chunk upload...")
                 page.wait_for_timeout(40000)
 
-            # Extra wait to ensure Facebook indexes the new Reel/post
-            log("Waiting 20 seconds for Facebook Page feed indexing...")
-            page.wait_for_timeout(20000)
-
-            # Navigate directly to the Page profile to verify post on feed
-            log(f"Navigating to Page profile (id={page_id}) to verify published video on feed...")
+            # Wait for network idle to ensure XHR upload streams complete
             try:
-                page.goto(f"https://www.facebook.com/profile.php?id={page_id}", wait_until="domcontentloaded", timeout=60000)
+                page.wait_for_load_state("networkidle", timeout=30000)
+                log("Network idle reached — upload streams completed.")
+            except Exception:
+                log("Network idle wait timeout — keeping extra safety margin...")
+                page.wait_for_timeout(15000)
+
+            # Extra indexing delay
+            log("Holding 15 seconds to ensure feed indexing...")
+            page.wait_for_timeout(15000)
+
+            # ── Step 7: Verification ──────────────────────────────────────────────────
+            log("Navigating to Page profile wall for final publication verification...")
+            try:
+                page.goto(page_profile_url, wait_until="domcontentloaded", timeout=60000)
                 page.wait_for_timeout(8000)
                 page.screenshot(path="fb_final_published_verification.png")
                 log("Verification screenshot saved: fb_final_published_verification.png")
             except Exception as e:
-                log(f"Verification navigation notice: {e}")
+                log(f"Verification screenshot notice: {e}")
 
             log("SUCCESS: Video successfully published to Facebook Page!")
 
