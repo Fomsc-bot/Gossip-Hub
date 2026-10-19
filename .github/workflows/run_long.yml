@@ -4,6 +4,10 @@ on:
   schedule:
     # 8:00 AM U.S. Eastern Time -> 12:00 UTC
     - cron: '00 12 * * *'
+    
+    # 2:30 AM Sri Lanka time
+    - cron: '00 21 * * *'
+    
   workflow_dispatch:
 
 jobs:
