@@ -10,7 +10,10 @@ on:
 
     # Added: 10:00 AM U.S. Eastern Time -> 15:00 UTC
     - cron: '00 15 * * *'
-
+    
+    # 12:30 AM Sri Lanka time (previous day in UTC)
+    - cron: '00 19 * * *'
+ 
   workflow_dispatch:
 
 jobs:
