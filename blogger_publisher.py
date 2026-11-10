@@ -1,4 +1,4 @@
-"""Create a Blogger draft from a fresh entertainment news story.
+"""Publish an entertainment news article to Blogger.
 
 This publisher is intentionally separate from the video workflows and creates
 drafts for editorial review. It uses Blogger and news credentials plus a
@@ -145,7 +145,7 @@ Source URL: {story['url']}
         if heading and len(paragraphs) >= 2:
             valid_sections.append((heading, paragraphs[:3]))
     if not title or len(valid_sections) < 3:
-        raise RuntimeError("Groq returned an incomplete article; no Blogger draft was created.")
+        raise RuntimeError("Groq returned an incomplete article; nothing was published.")
 
     body = []
     if dek:
@@ -206,25 +206,30 @@ def blogger_service():
     return build("blogger", "v3", credentials=credentials, cache_discovery=False), blog_id
 
 
-def already_posted(service, blog_id: str, candidate: str) -> bool:
-    """Skip near-identical titles already present in published or draft posts."""
+def already_posted(service, blog_id: str, candidate: str, source_url: str = "") -> bool:
+    """Skip stories whose source URL or title already appears in a live post or draft."""
     normalized = re.sub(r"[^a-z0-9]+", " ", candidate.lower()).strip()
     token_set = {word for word in normalized.split() if len(word) > 3}
-    for status in ("LIVE", "DRAFT"):
+    normalized_url = html.unescape(source_url).rstrip("/")
+    for status in ("LIVE", "DRAFT", "SCHEDULED"):
         page_token = None
         while True:
             result = service.posts().list(
                 blogId=blog_id,
                 status=status,
-                fetchBodies=False,
+                fetchBodies=bool(normalized_url),
                 maxResults=100,
                 pageToken=page_token,
             ).execute()
             for post in result.get("items", []):
+                existing_content = html.unescape(post.get("content") or "")
+                if normalized_url and normalized_url in existing_content:
+                    print("This source URL already appears in a Blogger post; skipping duplicate story.", flush=True)
+                    return True
                 existing = re.sub(r"[^a-z0-9]+", " ", clean(post.get("title")).lower()).strip()
                 existing_tokens = {word for word in existing.split() if len(word) > 3}
                 if normalized == existing or (token_set and len(token_set & existing_tokens) / len(token_set) >= 0.8):
-                    print("A post with a matching title already exists; skipping this story.")
+                    print("A post with a matching title already exists; skipping this story.", flush=True)
                     return True
             page_token = result.get("nextPageToken")
             if not page_token:
@@ -237,21 +242,20 @@ def main() -> None:
     print("Blogger settings validated. Starting news lookup.", flush=True)
     story = get_news()[0]
     print(f"Selected story: {story['title']}", flush=True)
-    title, content, labels, meta_description = generate_article(story)
-    if already_posted(service, blog_id, title):
+    if already_posted(service, blog_id, story["title"], story["url"]):
         return
-    print("Creating Blogger draft...", flush=True)
+    title, content, labels, meta_description = generate_article(story)
+    print("Publishing Blogger post...", flush=True)
     result = service.posts().insert(
         blogId=blog_id,
-        isDraft=True,
+        isDraft=False,
         body={"kind": "blogger#post", "title": title, "content": content, "labels": labels},
     ).execute()
-    print("Blogger draft created.", flush=True)
-    print(f"Draft title: {title}", flush=True)
-    print(f"Draft ID: {result.get('id')}", flush=True)
+    print("Blogger post published.", flush=True)
+    print(f"Published title: {title}", flush=True)
+    print(f"Post URL: {result.get('url', '(URL not returned)')}", flush=True)
     if meta_description:
         print(f"Suggested Blogger search description (add in post Settings): {meta_description}", flush=True)
-    print("Open Blogger > Posts > Draft to review and publish it manually.", flush=True)
 
 
 if __name__ == "__main__":

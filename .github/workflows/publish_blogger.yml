@@ -1,6 +1,15 @@
-name: Create Blogger Draft
+name: Publish Blogger Article
 
 on:
+  schedule:
+    # 8:00 AM Sri Lanka time (UTC+5:30)
+    - cron: "30 2 * * *"
+    # 12:30 PM Sri Lanka time
+    - cron: "0 7 * * *"
+    # 6:00 PM Sri Lanka time
+    - cron: "30 12 * * *"
+    # 9:00 PM Sri Lanka time; use this as an initial evening audience test slot.
+    - cron: "30 15 * * *"
   workflow_dispatch:
 
 permissions:
@@ -26,7 +35,7 @@ jobs:
       - name: Install publisher dependencies
         run: python -m pip install requests google-api-python-client google-auth
 
-      - name: Create Blogger draft
+      - name: Publish Blogger article
         env:
           BLOGGER_CLIENT_ID: ${{ secrets.BLOGGER_CLIENT_ID }}
           BLOGGER_CLIENT_SECRET: ${{ secrets.BLOGGER_CLIENT_SECRET }}
