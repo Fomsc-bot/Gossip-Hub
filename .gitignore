@@ -11,3 +11,6 @@ venv/
 .env
 .env.local
 .env.*.local
+blogger_client_secret.json
+blogger_token.json
+client_secret_*.json
