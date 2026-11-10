@@ -36,6 +36,7 @@ def get_news() -> list[dict[str, Any]]:
     news_key = os.getenv("NEWS_API_KEY")
     gnews_key = os.getenv("GNEWS_API_KEY")
     if news_key:
+        print("Fetching entertainment headlines from NewsAPI...", flush=True)
         response = requests.get(
             "https://newsapi.org/v2/top-headlines",
             params={"category": "entertainment", "pageSize": 20, "apiKey": news_key},
@@ -44,6 +45,7 @@ def get_news() -> list[dict[str, Any]]:
         response.raise_for_status()
         articles.extend(response.json().get("articles", []))
     if gnews_key:
+        print("Fetching entertainment headlines from GNews...", flush=True)
         response = requests.get(
             "https://gnews.io/api/v4/top-headlines",
             params={"topic": "entertainment", "lang": "en", "max": 20, "token": gnews_key},
@@ -94,9 +96,10 @@ Source URL: {story['url']}
     for model in models:
         for attempt, delay in enumerate((0, 3, 8), start=1):
             if delay:
-                print(f"Gemini model {model} retry {attempt}/3 after {delay}s.")
+                print(f"Gemini model {model} retry {attempt}/3 after {delay}s.", flush=True)
                 time.sleep(delay)
             try:
+                print(f"Requesting article generation from Gemini model {model} (attempt {attempt}/3)...", flush=True)
                 response = requests.post(
                     f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
                     params={"key": api_key},
@@ -110,7 +113,7 @@ Source URL: {story['url']}
                 response.raise_for_status()
                 raw = response.json()["candidates"][0]["content"]["parts"][0]["text"]
                 data = json.loads(raw)
-                print(f"Gemini article generation succeeded with {model}.")
+                print(f"Gemini article generation succeeded with {model}.", flush=True)
                 break
             except (requests.Timeout, requests.ConnectionError) as exc:
                 last_error = f"temporary network error for {model}: {type(exc).__name__}"
@@ -124,7 +127,7 @@ Source URL: {story['url']}
                 break
         if data is not None:
             break
-        print(f"Gemini model {model} unavailable; trying the next configured model.")
+        print(f"Gemini model {model} unavailable; trying the next configured model.", flush=True)
     if data is None:
         raise RuntimeError(
             f"Gemini generation failed after retries across {', '.join(models)}. "
@@ -160,7 +163,11 @@ def blogger_service():
         raise RuntimeError("Missing GitHub Actions secrets: " + ", ".join(missing))
     blog_id = os.getenv("BLOGGER_BLOG_ID")
     if not blog_id:
-        raise RuntimeError("Set BLOGGER_BLOG_ID as a repository Actions secret.")
+        raise RuntimeError(
+            "BLOGGER_BLOG_ID is empty. Add your numeric Blogger blog ID as a repository "
+            "Actions secret named BLOGGER_BLOG_ID, then rerun this workflow."
+        )
+    print("Refreshing Blogger authorization...", flush=True)
     credentials = Credentials(
         token=None,
         refresh_token=os.environ["BLOGGER_REFRESH_TOKEN"],
@@ -169,7 +176,8 @@ def blogger_service():
         client_secret=os.environ["BLOGGER_CLIENT_SECRET"],
         scopes=[BLOGGER_SCOPE],
     )
-    credentials.refresh(Request())
+    credentials.refresh(Request(timeout=30))
+    print("Blogger authorization ready.", flush=True)
     return build("blogger", "v3", credentials=credentials, cache_discovery=False), blog_id
 
 
@@ -198,21 +206,24 @@ def already_posted(service, blog_id: str, candidate: str) -> bool:
 
 
 def main() -> None:
-    story = get_news()[0]
-    print(f"Selected story: {story['title']}")
-    title, content, labels = generate_article(story)
+    print("Checking Blogger configuration before contacting news or Gemini...", flush=True)
     service, blog_id = blogger_service()
+    print("Blogger settings validated. Starting news lookup.", flush=True)
+    story = get_news()[0]
+    print(f"Selected story: {story['title']}", flush=True)
+    title, content, labels = generate_article(story)
     if already_posted(service, blog_id, title):
         return
+    print("Creating Blogger draft...", flush=True)
     result = service.posts().insert(
         blogId=blog_id,
         isDraft=True,
         body={"kind": "blogger#post", "title": title, "content": content, "labels": labels},
     ).execute()
-    print("Blogger draft created.")
-    print(f"Draft title: {title}")
-    print(f"Draft ID: {result.get('id')}")
-    print("Open Blogger > Posts > Draft to review and publish it manually.")
+    print("Blogger draft created.", flush=True)
+    print(f"Draft title: {title}", flush=True)
+    print(f"Draft ID: {result.get('id')}", flush=True)
+    print("Open Blogger > Posts > Draft to review and publish it manually.", flush=True)
 
 
 if __name__ == "__main__":
