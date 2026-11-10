@@ -67,16 +67,20 @@ def get_news() -> list[dict[str, Any]]:
     raise RuntimeError("The news feeds returned no usable articles with source links and descriptions.")
 
 
-def generate_article(story: dict[str, str]) -> tuple[str, str, list[str]]:
+def generate_article(story: dict[str, str]) -> tuple[str, str, list[str], str]:
     """Return article title, body HTML, and labels using Groq."""
     groq_key = os.getenv("GROQ_API_KEY")
     if not groq_key:
         raise RuntimeError("GROQ_API_KEY is missing from GitHub Actions secrets.")
-    prompt = f"""Write an original, useful entertainment-news blog article based only on the source details below.
-Do not invent quotes, facts, dates, motives, or confirmation. Attribute unconfirmed claims as unconfirmed.
-Paraphrase; do not reproduce source wording. Explain what is known, what remains unclear, and why readers may care.
-Return only valid JSON with keys title, dek, paragraphs (array of 5-7 substantive paragraphs), and labels (array of 3-5 short labels).
-Avoid sensational/clickbait claims. Do not claim exclusive reporting.
+    prompt = f"""Write a useful, reader-first entertainment news analysis using only the source details below.
+Do not invent quotes, facts, dates, motives, reactions, legal outcomes, or confirmation. Attribute reported claims to the named publisher and clearly state what the short source summary does not establish.
+Do not reproduce the source headline or copy its wording. Add context by explaining implications and unanswered questions without inventing details. Avoid sensationalism, keyword stuffing, unsupported claims, and generic filler.
+Return only valid JSON with these keys: title, dek, meta_description, sections, labels.
+title: descriptive, accurate, concise (about 50-65 characters, never misleading).
+dek: one short introductory summary.
+meta_description: accurate search snippet, 140-160 characters.
+sections: array of 3 objects, each with a descriptive heading and 2 substantive paragraphs. Headings should reflect this specific story, not generic SEO headings.
+labels: array of 3-5 concise Blogger labels.
 
 Source headline: {story['title']}
 Source summary: {story['description']}
@@ -131,18 +135,42 @@ Source URL: {story['url']}
             f"Last error: {last_error}. No Blogger post was created; check the Groq key, model access, and rate limits."
         )
     title = clean(data.get("title"))
-    paragraphs = [clean(p) for p in data.get("paragraphs", []) if clean(p)]
+    sections = data.get("sections", [])
     dek = clean(data.get("dek"))
-    if not title or len(paragraphs) < 5:
+    meta_description = clean(data.get("meta_description"))[:160]
+    valid_sections = []
+    for section in sections:
+        heading = clean(section.get("heading")) if isinstance(section, dict) else ""
+        paragraphs = [clean(p) for p in section.get("paragraphs", []) if clean(p)] if isinstance(section, dict) else []
+        if heading and len(paragraphs) >= 2:
+            valid_sections.append((heading, paragraphs[:3]))
+    if not title or len(valid_sections) < 3:
         raise RuntimeError("Groq returned an incomplete article; no Blogger draft was created.")
 
     body = []
     if dek:
-        body.append(f"<p><em>{html.escape(dek)}</em></p>")
-    body.extend(f"<p>{html.escape(paragraph)}</p>" for paragraph in paragraphs)
+        body.append(f'<p class="article-dek"><strong>{html.escape(dek)}</strong></p>')
+    if meta_description:
+        body.append(f'<p class="article-summary"><strong>Summary:</strong> {html.escape(meta_description)}</p>')
     image = story.get("image")
     if image.startswith("https://"):
-        body.insert(0, f'<p><img src="{html.escape(image, quote=True)}" alt="" /></p>')
+        alt_text = f"Related image accompanying the report: {title}"
+        publisher = story["source"] or urlparse(story["url"]).netloc
+        caption = f"Image accompanying the report from {publisher}."
+        body.append(
+            '<figure style="width:100%;max-width:900px;margin:20px auto;text-align:center;">'
+            '<div style="width:100%;aspect-ratio:16/9;overflow:hidden;background:#f2f2f2;">'
+            f'<img src="{html.escape(image, quote=True)}" '
+            f'alt="{html.escape(alt_text, quote=True)}" '
+            'loading="lazy" referrerpolicy="no-referrer" '
+            'style="display:block;width:100%;height:100%;object-fit:contain;margin:0 auto;" />'
+            '</div>'
+            + (f'<figcaption style="font-size:0.9em;color:#555;margin-top:6px;">{html.escape(caption)}</figcaption>' if caption else '')
+            + '</figure>'
+        )
+    for heading, paragraphs in valid_sections:
+        body.append(f"<h2>{html.escape(heading)}</h2>")
+        body.extend(f"<p>{html.escape(paragraph)}</p>" for paragraph in paragraphs)
     publisher = story["source"] or urlparse(story["url"]).netloc
     body.append(
         '<p><strong>Source:</strong> '
@@ -150,7 +178,7 @@ Source URL: {story['url']}
         f"{html.escape(publisher)}</a></p>"
     )
     labels = [clean(label)[:40] for label in data.get("labels", []) if clean(label)]
-    return title, "\n".join(body), labels
+    return title, "\n".join(body), labels, meta_description
 
 
 def blogger_service():
@@ -209,7 +237,7 @@ def main() -> None:
     print("Blogger settings validated. Starting news lookup.", flush=True)
     story = get_news()[0]
     print(f"Selected story: {story['title']}", flush=True)
-    title, content, labels = generate_article(story)
+    title, content, labels, meta_description = generate_article(story)
     if already_posted(service, blog_id, title):
         return
     print("Creating Blogger draft...", flush=True)
@@ -221,6 +249,8 @@ def main() -> None:
     print("Blogger draft created.", flush=True)
     print(f"Draft title: {title}", flush=True)
     print(f"Draft ID: {result.get('id')}", flush=True)
+    if meta_description:
+        print(f"Suggested Blogger search description (add in post Settings): {meta_description}", flush=True)
     print("Open Blogger > Posts > Draft to review and publish it manually.", flush=True)
 
 
