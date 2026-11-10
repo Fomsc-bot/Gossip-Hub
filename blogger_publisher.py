@@ -134,18 +134,56 @@ Source URL: {story['url']}
             f"Groq article generation failed after retries for {groq_model}. "
             f"Last error: {last_error}. No Blogger post was created; check the Groq key, model access, and rate limits."
         )
-    title = clean(data.get("title"))
+    title = clean(data.get("title") or data.get("headline") or story["title"])[:100]
     sections = data.get("sections", [])
-    dek = clean(data.get("dek"))
-    meta_description = clean(data.get("meta_description"))[:160]
+    dek = clean(data.get("dek") or data.get("intro"))
+    meta_description = clean(data.get("meta_description") or data.get("description") or dek)[:160]
     valid_sections = []
     for section in sections:
-        heading = clean(section.get("heading")) if isinstance(section, dict) else ""
-        paragraphs = [clean(p) for p in section.get("paragraphs", []) if clean(p)] if isinstance(section, dict) else []
-        if heading and len(paragraphs) >= 2:
-            valid_sections.append((heading, paragraphs[:3]))
-    if not title or len(valid_sections) < 3:
-        raise RuntimeError("Groq returned an incomplete article; nothing was published.")
+        if isinstance(section, dict):
+            heading = clean(section.get("heading") or section.get("title") or section.get("h2"))
+            paragraph_data = section.get("paragraphs") or section.get("body") or section.get("content") or section.get("text") or []
+        else:
+            heading, paragraph_data = "", section
+        if isinstance(paragraph_data, str):
+            paragraphs = [clean(p) for p in re.split(r"\n\s*\n", paragraph_data) if clean(p)]
+        elif isinstance(paragraph_data, list):
+            paragraphs = [clean(p) for p in paragraph_data if clean(p)]
+        else:
+            paragraphs = []
+        if paragraphs:
+            valid_sections.append((heading, paragraphs[:4]))
+
+    # Groq models sometimes return the requested prose as a flat paragraph list.
+    # Regroup that valid prose into three article sections instead of rejecting it.
+    if len(valid_sections) < 3:
+        flat_paragraphs = data.get("paragraphs") or data.get("body") or []
+        if isinstance(flat_paragraphs, str):
+            flat_paragraphs = [p.strip() for p in re.split(r"\n\s*\n", flat_paragraphs) if p.strip()]
+        if isinstance(flat_paragraphs, list):
+            flat_paragraphs = [clean(p) for p in flat_paragraphs if clean(p)]
+            if len(flat_paragraphs) >= 3:
+                headings = data.get("section_headings") or []
+                fallback_headings = ["What the report says", "Why this story matters", "What remains unclear"]
+                valid_sections = []
+                groups = [flat_paragraphs[0::3], flat_paragraphs[1::3], flat_paragraphs[2::3]]
+                for index, paragraphs in enumerate(groups):
+                    heading = clean(headings[index]) if isinstance(headings, list) and index < len(headings) else ""
+                    valid_sections.append((heading or fallback_headings[index], paragraphs))
+
+    paragraph_count = sum(len(paragraphs) for _, paragraphs in valid_sections)
+    article_word_count = sum(len(paragraph.split()) for _, paragraphs in valid_sections for paragraph in paragraphs)
+    fallback_headings = ["What happened", "What the report says", "What happens next"]
+    valid_sections = [
+        (heading or fallback_headings[index % len(fallback_headings)], paragraphs)
+        for index, (heading, paragraphs) in enumerate(valid_sections)
+    ]
+    if not title or len(valid_sections) < 3 or paragraph_count < 3 or article_word_count < 220:
+        raise RuntimeError(
+            f"Groq returned an article that is too incomplete to publish "
+            f"({len(valid_sections)} sections, {paragraph_count} paragraphs, {article_word_count} words). "
+            "Nothing was published; retry the workflow."
+        )
 
     body = []
     if dek:
