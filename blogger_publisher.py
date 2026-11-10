@@ -176,7 +176,7 @@ def blogger_service():
         client_secret=os.environ["BLOGGER_CLIENT_SECRET"],
         scopes=[BLOGGER_SCOPE],
     )
-    credentials.refresh(Request(timeout=30))
+    credentials.refresh(Request())
     print("Blogger authorization ready.", flush=True)
     return build("blogger", "v3", credentials=credentials, cache_discovery=False), blog_id
 
