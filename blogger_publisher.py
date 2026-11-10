@@ -67,6 +67,43 @@ def get_news() -> list[dict[str, Any]]:
     raise RuntimeError("The news feeds returned no usable articles with source links and descriptions.")
 
 
+def article_completeness(data: dict[str, Any]) -> tuple[int, int, int]:
+    """Count usable sections, paragraphs, and words in common Groq response shapes."""
+    sections = data.get("sections") or []
+    usable: list[list[str]] = []
+    if isinstance(sections, list):
+        for section in sections:
+            paragraph_data = section
+            if isinstance(section, dict):
+                paragraph_data = (
+                    section.get("paragraphs") or section.get("body")
+                    or section.get("content") or section.get("text") or []
+                )
+            if isinstance(paragraph_data, str):
+                paragraphs = [clean(p) for p in re.split(r"\n\s*\n", paragraph_data) if clean(p)]
+                if not paragraphs and clean(paragraph_data):
+                    paragraphs = [clean(paragraph_data)]
+            elif isinstance(paragraph_data, list):
+                paragraphs = [clean(p) for p in paragraph_data if clean(p)]
+            else:
+                paragraphs = []
+            if paragraphs:
+                usable.append(paragraphs)
+
+    if len(usable) < 3:
+        flat = data.get("paragraphs") or data.get("body") or []
+        if isinstance(flat, str):
+            flat = [p for p in re.split(r"\n\s*\n", flat) if clean(p)]
+        if isinstance(flat, list):
+            flat = [clean(p) for p in flat if clean(p)]
+            if len(flat) >= 3:
+                usable = [flat[0::3], flat[1::3], flat[2::3]]
+
+    paragraph_count = sum(len(group) for group in usable)
+    word_count = sum(len(paragraph.split()) for group in usable for paragraph in group)
+    return len(usable), paragraph_count, word_count
+
+
 def generate_article(story: dict[str, str]) -> tuple[str, str, list[str], str]:
     """Return article title, body HTML, and labels using Groq."""
     groq_key = os.getenv("GROQ_API_KEY")
@@ -104,11 +141,18 @@ Source URL: {story['url']}
                     "model": groq_model,
                     "messages": [
                         {"role": "system", "content": "Return a valid JSON object only. Follow the user's instructions and do not invent facts."},
-                        {"role": "user", "content": prompt},
+                        {
+                            "role": "user",
+                            "content": prompt + (
+                                "\nYour previous response was incomplete. Return all 3 sections, "
+                                "with 2 substantive paragraphs per section and at least 250 article words."
+                                if attempt > 1 else ""
+                            ),
+                        },
                     ],
                     "response_format": {"type": "json_object"},
                     "temperature": 0.5,
-                    "max_completion_tokens": 3000,
+                    "max_completion_tokens": 5000,
                 },
                 timeout=60,
             )
@@ -118,6 +162,17 @@ Source URL: {story['url']}
             response.raise_for_status()
             raw = response.json()["choices"][0]["message"]["content"]
             data = json.loads(raw)
+            if not isinstance(data, dict):
+                raise TypeError("Groq response JSON was not an object")
+            section_count, paragraph_count, word_count = article_completeness(data)
+            if not data.get("title") or section_count < 3 or paragraph_count < 3 or word_count < 220:
+                last_error = (
+                    f"incomplete article ({section_count} sections, {paragraph_count} paragraphs, "
+                    f"{word_count} words)"
+                )
+                print(f"Groq returned {last_error}; requesting a complete article on retry.", flush=True)
+                data = None
+                continue
             print(f"Groq article generation succeeded with {groq_model}.", flush=True)
             break
         except (requests.Timeout, requests.ConnectionError) as exc:
@@ -131,8 +186,8 @@ Source URL: {story['url']}
             break
     if data is None:
         raise RuntimeError(
-            f"Groq article generation failed after retries for {groq_model}. "
-            f"Last error: {last_error}. No Blogger post was created; check the Groq key, model access, and rate limits."
+            f"Groq article generation failed after 3 attempts for {groq_model}. "
+            f"Last error: {last_error}. No Blogger post was created."
         )
     title = clean(data.get("title") or data.get("headline") or story["title"])[:100]
     sections = data.get("sections", [])
