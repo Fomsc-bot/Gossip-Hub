@@ -12,6 +12,7 @@ import json
 import os
 import random
 import re
+import time
 from typing import Any
 from urllib.parse import urlparse
 
@@ -80,24 +81,55 @@ Source summary: {story['description']}
 Publisher: {story['source'] or urlparse(story['url']).netloc}
 Source URL: {story['url']}
 """
-    model = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
-    response = requests.post(
-        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-        params={"key": api_key},
-        json={"contents": [{"parts": [{"text": prompt}]}],
-              "generationConfig": {"responseMimeType": "application/json", "temperature": 0.5}},
-        timeout=90,
-    )
-    try:
-        response.raise_for_status()
-    except requests.HTTPError as exc:
-        # Keep the API key (sent in the query string) out of the Actions log.
-        detail = " ".join(response.text.split())[:1000]
+    primary_model = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
+    fallback_models = [
+        model.strip()
+        for model in os.getenv("GEMINI_FALLBACK_MODELS", "gemini-3.7-flash,gemini-3.5-flash").split(",")
+        if model.strip()
+    ]
+    models = list(dict.fromkeys([primary_model, *fallback_models]))
+    retryable_statuses = {408, 429, 500, 502, 503, 504}
+    last_error = "unknown Gemini API error"
+    data = None
+    for model in models:
+        for attempt, delay in enumerate((0, 3, 8), start=1):
+            if delay:
+                print(f"Gemini model {model} retry {attempt}/3 after {delay}s.")
+                time.sleep(delay)
+            try:
+                response = requests.post(
+                    f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                    params={"key": api_key},
+                    json={"contents": [{"parts": [{"text": prompt}]}],
+                          "generationConfig": {"responseMimeType": "application/json", "temperature": 0.5}},
+                    timeout=45,
+                )
+                if response.status_code in retryable_statuses:
+                    last_error = f"HTTP {response.status_code} for {model}: {' '.join(response.text.split())[:500]}"
+                    continue
+                response.raise_for_status()
+                raw = response.json()["candidates"][0]["content"]["parts"][0]["text"]
+                data = json.loads(raw)
+                print(f"Gemini article generation succeeded with {model}.")
+                break
+            except (requests.Timeout, requests.ConnectionError) as exc:
+                last_error = f"temporary network error for {model}: {type(exc).__name__}"
+            except (requests.HTTPError, KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
+                # Non-transient HTTP errors and malformed responses should fail clearly.
+                if isinstance(exc, requests.HTTPError):
+                    code = exc.response.status_code if exc.response is not None else "unknown"
+                    detail = " ".join(exc.response.text.split())[:500] if exc.response is not None else str(exc)
+                    raise RuntimeError(f"Gemini request failed (HTTP {code}) for {model}: {detail}") from exc
+                last_error = f"invalid Gemini response from {model}: {type(exc).__name__}"
+                break
+        if data is not None:
+            break
+        print(f"Gemini model {model} unavailable; trying the next configured model.")
+    if data is None:
         raise RuntimeError(
-            f"Gemini request failed (HTTP {response.status_code}) for model {model}: {detail}"
-        ) from exc
-    raw = response.json()["candidates"][0]["content"]["parts"][0]["text"]
-    data = json.loads(raw)
+            f"Gemini generation failed after retries across {', '.join(models)}. "
+            f"Last error: {last_error}. No Blogger post was created; rerun later or configure another available model."
+        )
     title = clean(data.get("title"))
     paragraphs = [clean(p) for p in data.get("paragraphs", []) if clean(p)]
     dek = clean(data.get("dek"))
