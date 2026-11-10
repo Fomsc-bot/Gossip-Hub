@@ -80,14 +80,22 @@ Source summary: {story['description']}
 Publisher: {story['source'] or urlparse(story['url']).netloc}
 Source URL: {story['url']}
 """
+    model = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
     response = requests.post(
-        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
+        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
         params={"key": api_key},
         json={"contents": [{"parts": [{"text": prompt}]}],
               "generationConfig": {"responseMimeType": "application/json", "temperature": 0.5}},
         timeout=90,
     )
-    response.raise_for_status()
+    try:
+        response.raise_for_status()
+    except requests.HTTPError as exc:
+        # Keep the API key (sent in the query string) out of the Actions log.
+        detail = " ".join(response.text.split())[:1000]
+        raise RuntimeError(
+            f"Gemini request failed (HTTP {response.status_code}) for model {model}: {detail}"
+        ) from exc
     raw = response.json()["candidates"][0]["content"]["parts"][0]["text"]
     data = json.loads(raw)
     title = clean(data.get("title"))
