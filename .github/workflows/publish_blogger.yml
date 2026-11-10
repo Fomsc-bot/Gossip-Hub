@@ -34,6 +34,5 @@ jobs:
           BLOGGER_BLOG_ID: ${{ secrets.BLOGGER_BLOG_ID }}
           NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
           GNEWS_API_KEY: ${{ secrets.GNEWS_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
         run: python -u blogger_publisher.py

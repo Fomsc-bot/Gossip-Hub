@@ -1,8 +1,8 @@
 """Create a Blogger draft from a fresh entertainment news story.
 
 This publisher is intentionally separate from the video workflows and creates
-drafts for editorial review. It uses Blogger and news credentials plus an
-optional Gemini API key and/or Groq API key from environment variables.
+drafts for editorial review. It uses Blogger and news credentials plus a
+Groq API key from environment variables for article generation.
 """
 
 from __future__ import annotations
@@ -68,8 +68,10 @@ def get_news() -> list[dict[str, Any]]:
 
 
 def generate_article(story: dict[str, str]) -> tuple[str, str, list[str]]:
-    """Return article title, body HTML, and labels using Gemini or Groq."""
-    api_key = os.getenv("GEMINI_API_KEY")
+    """Return article title, body HTML, and labels using Groq."""
+    groq_key = os.getenv("GROQ_API_KEY")
+    if not groq_key:
+        raise RuntimeError("GROQ_API_KEY is missing from GitHub Actions secrets.")
     prompt = f"""Write an original, useful entertainment-news blog article based only on the source details below.
 Do not invent quotes, facts, dates, motives, or confirmation. Attribute unconfirmed claims as unconfirmed.
 Paraphrase; do not reproduce source wording. Explain what is known, what remains unclear, and why readers may care.
@@ -81,106 +83,58 @@ Source summary: {story['description']}
 Publisher: {story['source'] or urlparse(story['url']).netloc}
 Source URL: {story['url']}
 """
-    primary_model = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
-    fallback_models = [
-        model.strip()
-        for model in os.getenv("GEMINI_FALLBACK_MODELS", "gemini-3.7-flash,gemini-3.5-flash").split(",")
-        if model.strip()
-    ]
-    models = list(dict.fromkeys([primary_model, *fallback_models])) if api_key else []
     retryable_statuses = {408, 429, 500, 502, 503, 504}
-    last_error = "unknown Gemini API error"
+    groq_model = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b").strip()
+    last_error = "unknown Groq API error"
     data = None
-    for model in models:
-        for attempt, delay in enumerate((0, 3, 8), start=1):
-            if delay:
-                print(f"Gemini model {model} retry {attempt}/3 after {delay}s.", flush=True)
-                time.sleep(delay)
-            try:
-                print(f"Requesting article generation from Gemini model {model} (attempt {attempt}/3)...", flush=True)
-                response = requests.post(
-                    f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-                    params={"key": api_key},
-                    json={"contents": [{"parts": [{"text": prompt}]}],
-                          "generationConfig": {"responseMimeType": "application/json", "temperature": 0.5}},
-                    timeout=45,
-                )
-                if response.status_code in retryable_statuses:
-                    last_error = f"HTTP {response.status_code} for {model}: {' '.join(response.text.split())[:500]}"
-                    continue
-                response.raise_for_status()
-                raw = response.json()["candidates"][0]["content"]["parts"][0]["text"]
-                data = json.loads(raw)
-                print(f"Gemini article generation succeeded with {model}.", flush=True)
-                break
-            except (requests.Timeout, requests.ConnectionError) as exc:
-                last_error = f"temporary network error for {model}: {type(exc).__name__}"
-            except (requests.HTTPError, KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
-                # Non-transient HTTP errors and malformed responses should fail clearly.
-                if isinstance(exc, requests.HTTPError):
-                    code = exc.response.status_code if exc.response is not None else "unknown"
-                    detail = " ".join(exc.response.text.split())[:500] if exc.response is not None else str(exc)
-                    raise RuntimeError(f"Gemini request failed (HTTP {code}) for {model}: {detail}") from exc
-                last_error = f"invalid Gemini response from {model}: {type(exc).__name__}"
-                break
-        if data is not None:
+    for attempt, delay in enumerate((0, 4, 10), start=1):
+        if delay:
+            print(f"Groq retry {attempt}/3 after {delay}s.", flush=True)
+            time.sleep(delay)
+        try:
+            print(f"Requesting article generation from Groq model {groq_model} (attempt {attempt}/3)...", flush=True)
+            response = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {groq_key}"},
+                json={
+                    "model": groq_model,
+                    "messages": [
+                        {"role": "system", "content": "Return a valid JSON object only. Follow the user's instructions and do not invent facts."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "response_format": {"type": "json_object"},
+                    "temperature": 0.5,
+                    "max_completion_tokens": 3000,
+                },
+                timeout=60,
+            )
+            if response.status_code in retryable_statuses:
+                last_error = f"Groq HTTP {response.status_code}: {' '.join(response.text.split())[:500]}"
+                continue
+            response.raise_for_status()
+            raw = response.json()["choices"][0]["message"]["content"]
+            data = json.loads(raw)
+            print(f"Groq article generation succeeded with {groq_model}.", flush=True)
             break
-        print(f"Gemini model {model} unavailable; trying the next configured model.", flush=True)
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            last_error = f"Groq temporary network error: {type(exc).__name__}"
+        except (requests.HTTPError, KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
+            if isinstance(exc, requests.HTTPError):
+                code = exc.response.status_code if exc.response is not None else "unknown"
+                detail = " ".join(exc.response.text.split())[:500] if exc.response is not None else str(exc)
+                raise RuntimeError(f"Groq request failed (HTTP {code}) for {groq_model}: {detail}") from exc
+            last_error = f"invalid Groq response: {type(exc).__name__}"
+            break
     if data is None:
-        groq_key = os.getenv("GROQ_API_KEY")
-        if groq_key:
-            groq_model = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b").strip()
-            for attempt, delay in enumerate((0, 4, 10), start=1):
-                if delay:
-                    print(f"Groq retry {attempt}/3 after {delay}s.", flush=True)
-                    time.sleep(delay)
-                try:
-                    print(f"Requesting article generation from Groq model {groq_model} (attempt {attempt}/3)...", flush=True)
-                    response = requests.post(
-                        "https://api.groq.com/openai/v1/chat/completions",
-                        headers={"Authorization": f"Bearer {groq_key}"},
-                        json={
-                            "model": groq_model,
-                            "messages": [
-                                {"role": "system", "content": "Return a valid JSON object only. Follow the user's instructions and do not invent facts."},
-                                {"role": "user", "content": prompt},
-                            ],
-                            "response_format": {"type": "json_object"},
-                            "temperature": 0.5,
-                            "max_completion_tokens": 3000,
-                        },
-                        timeout=60,
-                    )
-                    if response.status_code in retryable_statuses:
-                        last_error = f"Groq HTTP {response.status_code}: {' '.join(response.text.split())[:500]}"
-                        continue
-                    response.raise_for_status()
-                    raw = response.json()["choices"][0]["message"]["content"]
-                    data = json.loads(raw)
-                    print(f"Groq article generation succeeded with {groq_model}.", flush=True)
-                    break
-                except (requests.Timeout, requests.ConnectionError) as exc:
-                    last_error = f"Groq temporary network error: {type(exc).__name__}"
-                except (requests.HTTPError, KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
-                    if isinstance(exc, requests.HTTPError):
-                        code = exc.response.status_code if exc.response is not None else "unknown"
-                        detail = " ".join(exc.response.text.split())[:500] if exc.response is not None else str(exc)
-                        raise RuntimeError(f"Groq request failed (HTTP {code}) for {groq_model}: {detail}") from exc
-                    last_error = f"invalid Groq response: {type(exc).__name__}"
-                    break
-        if data is None:
-            if not api_key and not os.getenv("GROQ_API_KEY"):
-                raise RuntimeError("Set GEMINI_API_KEY and/or GROQ_API_KEY in GitHub Actions secrets.")
         raise RuntimeError(
-            f"Article generation failed. Gemini models tried: {', '.join(models) or 'none'}; "
-            f"Groq model tried: {os.getenv('GROQ_MODEL', 'openai/gpt-oss-20b') if os.getenv('GROQ_API_KEY') else 'not configured'}. "
-            f"Last error: {last_error}. No Blogger post was created; rerun later or check provider limits."
+            f"Groq article generation failed after retries for {groq_model}. "
+            f"Last error: {last_error}. No Blogger post was created; check the Groq key, model access, and rate limits."
         )
     title = clean(data.get("title"))
     paragraphs = [clean(p) for p in data.get("paragraphs", []) if clean(p)]
     dek = clean(data.get("dek"))
     if not title or len(paragraphs) < 5:
-        raise RuntimeError("Gemini returned an incomplete article; no Blogger draft was created.")
+        raise RuntimeError("Groq returned an incomplete article; no Blogger draft was created.")
 
     body = []
     if dek:
@@ -228,28 +182,29 @@ def already_posted(service, blog_id: str, candidate: str) -> bool:
     """Skip near-identical titles already present in published or draft posts."""
     normalized = re.sub(r"[^a-z0-9]+", " ", candidate.lower()).strip()
     token_set = {word for word in normalized.split() if len(word) > 3}
-    page_token = None
-    while True:
-        result = service.posts().list(
-            blogId=blog_id,
-            status="live,draft",
-            fetchBodies=False,
-            maxResults=100,
-            pageToken=page_token,
-        ).execute()
-        for post in result.get("items", []):
-            existing = re.sub(r"[^a-z0-9]+", " ", clean(post.get("title")).lower()).strip()
-            existing_tokens = {word for word in existing.split() if len(word) > 3}
-            if normalized == existing or (token_set and len(token_set & existing_tokens) / len(token_set) >= 0.8):
-                print("A post with a matching title already exists; skipping this story.")
-                return True
-        page_token = result.get("nextPageToken")
-        if not page_token:
-            return False
+    for status in ("LIVE", "DRAFT"):
+        page_token = None
+        while True:
+            result = service.posts().list(
+                blogId=blog_id,
+                status=status,
+                fetchBodies=False,
+                maxResults=100,
+                pageToken=page_token,
+            ).execute()
+            for post in result.get("items", []):
+                existing = re.sub(r"[^a-z0-9]+", " ", clean(post.get("title")).lower()).strip()
+                existing_tokens = {word for word in existing.split() if len(word) > 3}
+                if normalized == existing or (token_set and len(token_set & existing_tokens) / len(token_set) >= 0.8):
+                    print("A post with a matching title already exists; skipping this story.")
+                    return True
+            page_token = result.get("nextPageToken")
+            if not page_token:
+                break
 
 
 def main() -> None:
-    print("Checking Blogger configuration before contacting news or Gemini...", flush=True)
+    print("Checking Blogger configuration before contacting news or Groq...", flush=True)
     service, blog_id = blogger_service()
     print("Blogger settings validated. Starting news lookup.", flush=True)
     story = get_news()[0]
