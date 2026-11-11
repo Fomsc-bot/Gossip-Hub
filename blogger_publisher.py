@@ -1,8 +1,7 @@
 """Publish an entertainment news article to Blogger.
 
-This publisher is intentionally separate from the video workflows and creates
-drafts for editorial review. It uses Blogger and news credentials plus a
-Groq API key from environment variables for article generation.
+This publisher creates a public Blogger article and shares it to YouTube and
+Facebook using credentials supplied through environment variables.
 """
 
 from __future__ import annotations
@@ -23,7 +22,128 @@ from googleapiclient.discovery import build
 
 
 BLOGGER_SCOPE = "https://www.googleapis.com/auth/blogger"
+YOUTUBE_SCOPE = "https://www.googleapis.com/auth/youtube.force-ssl"
 USER_AGENT = "GossipHubBloggerPublisher/1.0 (editorial automation)"
+
+
+def social_hashtags(title: str, labels: list[str]) -> str:
+    """Build a short, relevant hashtag list from the article title and labels."""
+    candidates = [*labels, *re.findall(r"[A-Za-z0-9]+", title)]
+    tags: list[str] = ["#GossipHub", "#EntertainmentNews"]
+    for candidate in candidates:
+        words = re.findall(r"[A-Za-z0-9]+", candidate)
+        if not words:
+            continue
+        tag = "#" + "".join(word[:1].upper() + word[1:] for word in words)
+        if tag.lower() not in {item.lower() for item in tags}:
+            tags.append(tag)
+        if len(tags) >= 6:
+            break
+    return " ".join(tags)
+
+
+def social_caption(title: str, summary: str, labels: list[str], post_url: str) -> str:
+    excerpt = summary.strip()
+    if len(excerpt) > 220:
+        excerpt = excerpt[:217].rsplit(" ", 1)[0].rstrip(".,;:") + "..."
+    parts = [title.strip()]
+    if excerpt and excerpt.casefold() != title.strip().casefold():
+        parts.append(excerpt)
+    parts.extend((f"Read the full story: {post_url}", social_hashtags(title, labels)))
+    return "\n\n".join(parts)
+
+
+def publish_youtube_community_post(title: str, caption: str) -> None:
+    """Publish the article link and caption as a YouTube Community post."""
+    required = ("YT_CLIENT_ID", "YT_CLIENT_SECRET", "YT_REFRESH_TOKEN")
+    missing = [name for name in required if not os.getenv(name)]
+    if missing:
+        raise RuntimeError("Missing GitHub Actions secrets: " + ", ".join(missing))
+    credentials = Credentials(
+        token=None,
+        refresh_token=os.environ["YT_REFRESH_TOKEN"],
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=os.environ["YT_CLIENT_ID"],
+        client_secret=os.environ["YT_CLIENT_SECRET"],
+        scopes=[YOUTUBE_SCOPE],
+    )
+    credentials.refresh(Request())
+    youtube = build("youtube", "v3", credentials=credentials, cache_discovery=False)
+    response = youtube.activities().insert(
+        part="snippet",
+        body={"snippet": {"type": "bulletin", "description": caption}},
+    ).execute()
+    print(f"YouTube Community post published (activity {response.get('id', 'unknown')}).", flush=True)
+
+
+def publish_facebook_page_post(caption: str) -> None:
+    """Publish the article link and caption as a Facebook Page feed post."""
+    page_id = os.getenv("FB_PAGE_ID")
+    access_token = os.getenv("FB_PAGE_ACCESS_TOKEN")
+    if not page_id or not access_token:
+        missing = [name for name, value in (("FB_PAGE_ID", page_id), ("FB_PAGE_ACCESS_TOKEN", access_token)) if not value]
+        raise RuntimeError("Missing GitHub Actions secrets: " + ", ".join(missing))
+    api_version = os.getenv("FB_GRAPH_API_VERSION", "v21.0")
+    response = requests.post(
+        f"https://graph.facebook.com/{api_version}/{page_id}/feed",
+        data={"message": caption, "access_token": access_token},
+        timeout=30,
+    )
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {}
+    if not response.ok or payload.get("error"):
+        raise RuntimeError(f"Facebook Page post failed (HTTP {response.status_code}): {payload.get('error', response.text[:500])}")
+    print(f"Facebook Page post published (post {payload.get('id', 'unknown')}).", flush=True)
+
+
+def render_article_short(title: str, summary: str, image_url: str):
+    """Render a short using the selected Blogger story rather than fetching another story."""
+    try:
+        import main3
+    except ImportError as exc:
+        raise RuntimeError("Video rendering dependencies are unavailable; install requirements.txt.") from exc
+
+    main3.WORKDIR.mkdir(parents=True, exist_ok=True)
+    yt_title, lines = main3.generate_script(title, summary, "")
+    background_path = main3.fetch_and_prepare_bg(image_url)
+    tts_paths, durations = main3.create_tts(lines)
+    video_path = main3.WORKDIR / "blogger_article_short.mp4"
+    main3.build_video(background_path, lines, tts_paths, durations, video_path)
+    return main3, video_path, yt_title
+
+
+def publish_youtube_short(main3, video_path, title: str, summary: str, caption: str) -> None:
+    """Upload the rendered article short with its Blogger permalink in the description."""
+    missing = [name for name in ("YT_CLIENT_ID", "YT_CLIENT_SECRET", "YT_REFRESH_TOKEN") if not os.getenv(name)]
+    if missing:
+        raise RuntimeError("Missing GitHub Actions secrets: " + ", ".join(missing))
+    title_with_short_tag = f"{title[:90].rstrip()} #Shorts"
+    description = f"{summary.strip()}\n\n{caption}".strip()
+    main3.YT_CLIENT_ID = os.environ["YT_CLIENT_ID"]
+    main3.YT_CLIENT_SECRET = os.environ["YT_CLIENT_SECRET"]
+    main3.YT_REFRESH_TOKEN = os.environ["YT_REFRESH_TOKEN"]
+    main3.upload_to_youtube(video_path, title_with_short_tag, description)
+
+
+def publish_social_posts(title: str, summary: str, labels: list[str], post_url: str, image_url: str) -> None:
+    caption = social_caption(title, summary, labels, post_url)
+    main3, video_path, short_title = render_article_short(title, summary, image_url)
+    print("Publishing article short to YouTube...", flush=True)
+    publish_youtube_short(main3, video_path, short_title, summary, caption)
+    print("Publishing article short to Facebook Reels...", flush=True)
+    try:
+        from facebook_main import upload_facebook_reel
+    except ImportError as exc:
+        raise RuntimeError("Facebook Reel publishing dependencies are unavailable.") from exc
+    reel_description = f"{caption}\n\n#Reels"[:5000]
+    upload_facebook_reel(video_path, title, reel_description)
+    main3.cleanup()
+    print("Publishing article link to YouTube Community...", flush=True)
+    publish_youtube_community_post(title, caption)
+    print("Publishing article link to Facebook Page...", flush=True)
+    publish_facebook_page_post(caption)
 
 
 def clean(value: Any) -> str:
@@ -346,7 +466,11 @@ def main() -> None:
     ).execute()
     print("Blogger post published.", flush=True)
     print(f"Published title: {title}", flush=True)
-    print(f"Post URL: {result.get('url', '(URL not returned)')}", flush=True)
+    post_url = clean(result.get("url"))
+    print(f"Post URL: {post_url or '(URL not returned)'}", flush=True)
+    if not post_url.startswith(("https://", "http://")):
+        raise RuntimeError("Blogger published the article but returned no valid post URL; social posts were not attempted.")
+    publish_social_posts(title, meta_description or story["description"], labels, post_url, story.get("image", ""))
     if meta_description:
         print(f"Suggested Blogger search description (add in post Settings): {meta_description}", flush=True)
 
