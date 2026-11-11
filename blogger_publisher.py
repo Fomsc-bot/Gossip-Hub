@@ -22,7 +22,6 @@ from googleapiclient.discovery import build
 
 
 BLOGGER_SCOPE = "https://www.googleapis.com/auth/blogger"
-YOUTUBE_SCOPE = "https://www.googleapis.com/auth/youtube.force-ssl"
 USER_AGENT = "GossipHubBloggerPublisher/1.0 (editorial automation)"
 
 
@@ -51,29 +50,6 @@ def social_caption(title: str, summary: str, labels: list[str], post_url: str) -
         parts.append(excerpt)
     parts.extend((f"Read the full story: {post_url}", social_hashtags(title, labels)))
     return "\n\n".join(parts)
-
-
-def publish_youtube_community_post(title: str, caption: str) -> None:
-    """Publish the article link and caption as a YouTube Community post."""
-    required = ("YT_CLIENT_ID", "YT_CLIENT_SECRET", "YT_REFRESH_TOKEN")
-    missing = [name for name in required if not os.getenv(name)]
-    if missing:
-        raise RuntimeError("Missing GitHub Actions secrets: " + ", ".join(missing))
-    credentials = Credentials(
-        token=None,
-        refresh_token=os.environ["YT_REFRESH_TOKEN"],
-        token_uri="https://oauth2.googleapis.com/token",
-        client_id=os.environ["YT_CLIENT_ID"],
-        client_secret=os.environ["YT_CLIENT_SECRET"],
-        scopes=[YOUTUBE_SCOPE],
-    )
-    credentials.refresh(Request())
-    youtube = build("youtube", "v3", credentials=credentials, cache_discovery=False)
-    response = youtube.activities().insert(
-        part="snippet",
-        body={"snippet": {"type": "bulletin", "description": caption}},
-    ).execute()
-    print(f"YouTube Community post published (activity {response.get('id', 'unknown')}).", flush=True)
 
 
 def publish_facebook_page_post(caption: str) -> None:
@@ -140,8 +116,6 @@ def publish_social_posts(title: str, summary: str, labels: list[str], post_url: 
     reel_description = f"{caption}\n\n#Reels"[:5000]
     upload_facebook_reel(video_path, title, reel_description)
     main3.cleanup()
-    print("Publishing article link to YouTube Community...", flush=True)
-    publish_youtube_community_post(title, caption)
     print("Publishing article link to Facebook Page...", flush=True)
     publish_facebook_page_post(caption)
 
