@@ -82,7 +82,11 @@ def render_article_short(title: str, summary: str, image_url: str):
         raise RuntimeError("Video rendering dependencies are unavailable; install requirements.txt.") from exc
 
     main3.WORKDIR.mkdir(parents=True, exist_ok=True)
-    yt_title, lines = main3.generate_script(title, summary, "")
+    # Keep the narration to a teaser and direct viewers to the post description
+    # for the full story; never read the article summary in the voiceover.
+    yt_title, lines = main3.generate_script(title, "", "")
+    lines = [line for line in lines if line != "Follow for more entertainment updates!"]
+    lines.append("Want the full story? Tap the link in the description to read it.")
     background_path = main3.fetch_and_prepare_bg(image_url)
     tts_paths, durations = main3.create_tts(lines)
     video_path = main3.WORKDIR / "blogger_article_short.mp4"
