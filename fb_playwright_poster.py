@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -166,6 +167,54 @@ def handle_popups(page):
             pass
 
 
+def open_video_composer(page) -> None:
+    """Open the Page's Reel composer, handling Facebook's varying Page layouts."""
+    for label, pattern in (
+        ("Create reel", re.compile(r"create\s+reel", re.I)),
+        ("Create post", re.compile(r"create\s+(a\s+)?post|what'?s on your mind", re.I)),
+    ):
+        try:
+            button = page.get_by_role("button", name=pattern).first
+            if button.is_visible(timeout=2500):
+                log(f"Opening Page composer via '{label}'...")
+                button.click(timeout=10000)
+                page.wait_for_timeout(2500)
+                if label == "Create reel":
+                    return
+                break
+        except Exception:
+            continue
+
+    selectors = [
+        page.get_by_role("button", name=re.compile(r"photo.?video|add video|video|create reel", re.I)).first,
+        page.locator('[aria-label*="Photo/video" i], [aria-label*="Create reel" i], [aria-label*="Add video" i]').first,
+        page.get_by_text(re.compile(r"photo.?video|add video|create reel", re.I)).first,
+    ]
+    for candidate in selectors:
+        try:
+            if candidate.is_visible(timeout=2500):
+                log("Opening video attachment/Reel composer...")
+                candidate.click(timeout=10000)
+                page.wait_for_timeout(2500)
+                return
+        except Exception:
+            continue
+
+    page.screenshot(path="fb_composer_not_found.png", full_page=True)
+    try:
+        buttons = page.locator('button, [role="button"]').evaluate_all(
+            "els => els.map(el => (el.innerText || el.getAttribute('aria-label') || '').trim()).filter(Boolean)"
+        )
+    except Exception:
+        buttons = []
+    log(f"Composer diagnostics: URL={page.url!r}; title={page.title()!r}; buttons={buttons[:60]!r}")
+    raise RuntimeError(
+        "Could not find the Page's Create Reel/Create Post controls. "
+        "Check fb_composer_not_found.png and confirm the FB_COOKIES_JSON account "
+        "still has Page publishing access."
+    )
+
+
 def switch_to_gossip_hub_profile(page, page_id: str):
     """
     Navigates to the Gossip Hub page URL and switches profile if needed.
@@ -290,7 +339,7 @@ def publish_to_facebook():
 
         context = browser.new_context(
             storage_state=str(temp_session_file),
-            viewport={"width": 1280, "height": 900},
+            viewport={"width": 1100, "height": 700},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             record_video_dir=str(video_recording_dir)
         )
@@ -311,26 +360,8 @@ def publish_to_facebook():
             page.screenshot(path="fb_step1_page_wall.png")
 
             # ── Step 2: Click "Photo/video" button ────────────────────────────────────
-            log('Step 2: Clicking "Photo/video" button...')
-            photo_video_btn = page.locator(
-                'div[aria-label="Photo/video"][role="button"], '
-                '[aria-label="Photo/video"], '
-                'div[role="button"]:has-text("Photo/video"), '
-                'span:has-text("Photo/video")'
-            ).first
-
-            clicked_pv = safe_click(page, photo_video_btn, "Photo/video", timeout=30000)
-            if not clicked_pv:
-                log("Primary 'Photo/video' button click missed. Trying alternative post creation trigger...")
-                create_post_box = page.locator(
-                    'div[role="button"]:has-text("What\'s on your mind"), '
-                    'div[aria-label*="Create a post"], '
-                    'div[role="textbox"]'
-                ).first
-                if not safe_click(page, create_post_box, "Create Post Box", timeout=15000):
-                    raise RuntimeError('"Photo/video" or post creation box not found on Facebook Page wall.')
-
-            page.wait_for_timeout(4000)
+            log("Step 2: Opening the Page Reel/video composer...")
+            open_video_composer(page)
             page.screenshot(path="fb_step3_photo_video_modal.png")
 
             # ── Step 3: Attach Video File to Modal Input ──────────────────────────────

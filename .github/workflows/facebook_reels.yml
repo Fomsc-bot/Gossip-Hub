@@ -40,8 +40,10 @@ jobs:
           GNEWS_API_KEY: ${{ secrets.GNEWS_API_KEY }}
           FB_COOKIES_JSON: ${{ secrets.FB_COOKIES_JSON }}
           FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
-          HEADLESS: 'true'
-        run: python facebook_main.py
+          HEADLESS: 'false'
+        # GitHub's hosted runner has no visible desktop. Xvfb provides a small
+        # headed display; Playwright records it so the run can be reviewed below.
+        run: xvfb-run -a python facebook_main.py
 
       - name: Upload browser debug artifacts
         if: always()
@@ -51,3 +53,4 @@ jobs:
           path: |
             *.png
             video_recording/*.webm
+          if-no-files-found: warn
