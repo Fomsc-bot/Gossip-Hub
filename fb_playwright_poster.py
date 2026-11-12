@@ -247,7 +247,7 @@ def switch_to_gossip_hub_profile(page, page_id: str):
     Navigates to the Gossip Hub page URL and switches profile if needed.
     Raises RuntimeError if session expired or security checkpoint hit.
     """
-    page_url = f"https://www.facebook.com/profile.php?id={page_id}"
+    page_url = f"https://www.facebook.com/profile.php?id={page_id}&sk=about"
     log(f"Step 0: Navigating to Page profile: {page_url}")
     page.goto(page_url, wait_until="domcontentloaded", timeout=60000)
     page.wait_for_timeout(6000)
@@ -309,7 +309,7 @@ def switch_to_gossip_hub_profile(page, page_id: str):
 
 def open_facebook_page(page, page_id: str) -> str:
     """Log in with saved state, switch to the Page profile, and open its wall."""
-    page_url = f"https://www.facebook.com/profile.php?id={page_id}"
+    page_url = f"https://www.facebook.com/profile.php?id={page_id}&sk=about"
     switch_to_gossip_hub_profile(page, page_id)
     log(f"Opening Facebook Page wall: {page_url}")
     page.goto(page_url, wait_until="domcontentloaded", timeout=60000)
