@@ -17,3 +17,7 @@ client_secret_*.json
 fb_session.json
 temp_fb_session.json
 temp_fb_preflight_session.json
+temp_recorder_session.json
+click_log.json
+trace.zip
+recorder_final_state.png

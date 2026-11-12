@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
-DEFAULT_FB_PAGE_ID = "61584777925866"
+DEFAULT_FB_PAGE_ID = "100081981528810"
 
 
 def get_fb_session_json():
@@ -178,6 +178,7 @@ def handle_popups(page):
 def open_video_composer(page) -> None:
     """Open the Page's Reel composer, handling Facebook's varying Page layouts."""
     for label, pattern in (
+        ("Photo/video", re.compile(r"photo.?video", re.I)),
         ("Create reel", re.compile(r"create\s+reel", re.I)),
         ("Create post", re.compile(r"create\s+(a\s+)?post|what'?s on your mind", re.I)),
     ):
@@ -189,7 +190,7 @@ def open_video_composer(page) -> None:
                 button.click(timeout=10000)
                 page.wait_for_timeout(2500)
                 log(f"Clicked '{label}'; composer had time to open.")
-                if label == "Create reel":
+                if label in ("Photo/video", "Create reel"):
                     return
                 break
         except Exception:
@@ -468,6 +469,8 @@ def publish_to_facebook():
             # ── Step 4: Enter Caption Text ───────────────────────────────────────────
             log("Step 4: Entering caption into post text editor...")
             caption_box = page.locator(
+                'div[aria-placeholder*="Describe your reel" i][role="textbox"], '
+                'div[contenteditable="true"][aria-placeholder*="Describe your reel" i], '
                 'div[role="dialog"] div[contenteditable="true"], '
                 'div[aria-placeholder*="What\'s on your mind"][role="textbox"], '
                 'div[aria-placeholder="What\'s on your mind, Gossip Hub?"][role="textbox"], '
@@ -475,13 +478,11 @@ def publish_to_facebook():
                 'div[contenteditable="true"][role="textbox"]'
             ).first
 
+            caption_placeholder = (caption_box.get_attribute("aria-placeholder") or "").lower()
+            caption_is_reel_description = "describe" in caption_placeholder
             typed_caption = type_into_editor(page, caption_box, caption, "Caption Editor", timeout=20000)
             if not typed_caption:
-                log("WARNING: Could not type into primary caption editor. Trying keyboard fallback...")
-                try:
-                    page.keyboard.type(caption, delay=20)
-                except Exception as e:
-                    log(f"Fallback typing notice: {e}")
+                log("No caption editor is visible yet; will check for the Reel description step after Next.")
 
             page.wait_for_timeout(3000)
             page.screenshot(path="fb_step5_caption_entered.png")
@@ -511,7 +512,7 @@ def publish_to_facebook():
                         'div[aria-placeholder*="Describe"][role="textbox"], '
                         'div[contenteditable="true"][aria-placeholder*="Describe"]'
                     ).first
-                    if describe_box.is_visible(timeout=3000):
+                    if describe_box.is_visible(timeout=3000) and not caption_is_reel_description:
                         type_into_editor(page, describe_box, caption, "Describe Reel", timeout=10000)
 
                     # Step 5d: Click final Post/Publish/Share button
