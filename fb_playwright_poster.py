@@ -233,7 +233,7 @@ def switch_to_gossip_hub_profile(page, page_id: str):
 
 def publish_to_facebook():
     cookies_json = os.getenv("FB_COOKIES_JSON")
-    page_id = os.getenv("FB_PAGE_ID", DEFAULT_FB_PAGE_ID)
+    page_id = os.getenv("FB_PAGE_ID") or DEFAULT_FB_PAGE_ID
 
     headless_env = os.getenv("HEADLESS", "false").lower()
     is_headless = headless_env == "true"
