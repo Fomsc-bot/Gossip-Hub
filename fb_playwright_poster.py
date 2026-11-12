@@ -321,6 +321,18 @@ def open_facebook_page(page, page_id: str) -> str:
             "Facebook session expired or requires a security check. "
             "Re-export FB_COOKIES_JSON using an account with Page publishing access."
         )
+    email_field = page.locator(
+        'input[name="email"], input[autocomplete="username"], '
+        'input[placeholder*="Email or phone" i]'
+    ).first
+    password_field = page.locator('input[name="pass"], input[type="password"]').first
+    if email_field.is_visible() and password_field.is_visible():
+        page.screenshot(path="fb_login_required.png", full_page=True)
+        raise RuntimeError(
+            "Facebook displayed its login form, so FB_COOKIES_JSON was not accepted. "
+            "Re-export the current logged-in browser state with export_fb_cookies.py, "
+            "replace the repository secret, and rerun preflight. See fb_login_required.png."
+        )
     body_text = page.locator("body").inner_text(timeout=10000).lower()
     if "this content isn't available" in body_text or "content isn't available" in body_text:
         raise RuntimeError(
