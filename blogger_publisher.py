@@ -254,7 +254,12 @@ Source URL: {story['url']}
                 },
                 timeout=60,
             )
-            if response.status_code in retryable_statuses:
+            # Groq's JSON-constrained output can intermittently reject a
+            # completion from GPT-OSS with json_validate_failed. Treat that
+            # provider validation error as retryable, just like throttling.
+            if response.status_code in retryable_statuses or (
+                response.status_code == 400 and "json_validate_failed" in response.text
+            ):
                 last_error = f"Groq HTTP {response.status_code}: {' '.join(response.text.split())[:500]}"
                 continue
             response.raise_for_status()
