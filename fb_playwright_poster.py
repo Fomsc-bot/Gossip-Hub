@@ -233,7 +233,7 @@ def ensure_video_upload_control(page):
     except PlaywrightTimeoutError as exc:
         page.screenshot(path="fb_upload_control_missing.png", full_page=True)
         raise RuntimeError(
-            "Business Suite Reel composer opened, but its video file input was not found. "
+            "Facebook Page video composer opened, but its video file input was not found. "
             "See fb_upload_control_missing.png."
         ) from exc
 
@@ -307,21 +307,28 @@ def switch_to_gossip_hub_profile(page, page_id: str):
     page.screenshot(path="fb_step0_switched_confirm.png")
 
 
-def open_business_suite(page, page_id: str) -> str:
-    """Open Business Suite with the target Page selected as the publishing asset."""
-    suite_url = f"https://business.facebook.com/latest/home?asset_id={page_id}"
-    log(f"Step 0: Opening Meta Business Suite for Page {page_id}: {suite_url}")
-    page.goto(suite_url, wait_until="domcontentloaded", timeout=60000)
-    page.wait_for_timeout(10000)
+def open_facebook_page(page, page_id: str) -> str:
+    """Log in with saved state, switch to the Page profile, and open its wall."""
+    page_url = f"https://www.facebook.com/profile.php?id={page_id}"
+    switch_to_gossip_hub_profile(page, page_id)
+    log(f"Opening Facebook Page wall: {page_url}")
+    page.goto(page_url, wait_until="domcontentloaded", timeout=60000)
+    page.wait_for_timeout(7000)
     current_url = page.url.lower()
-    page.screenshot(path="fb_step0_business_suite.png", full_page=True)
+    page.screenshot(path="fb_step1_page_wall.png", full_page=True)
     if "login" in current_url or "checkpoint" in current_url or "two_factor" in current_url:
         raise RuntimeError(
-            "Facebook session expired or Meta Business Suite requires a security check. "
-            "Re-export FB_COOKIES_JSON from an account with Page publishing access."
+            "Facebook session expired or requires a security check. "
+            "Re-export FB_COOKIES_JSON using an account with Page publishing access."
         )
-    log(f"Business Suite loaded: title={page.title()!r}; URL={page.url!r}")
-    return suite_url
+    body_text = page.locator("body").inner_text(timeout=10000).lower()
+    if "this content isn't available" in body_text or "content isn't available" in body_text:
+        raise RuntimeError(
+            "Facebook reports this Page is unavailable to the saved account. "
+            "Confirm FB_PAGE_ID and that FB_COOKIES_JSON can manage the Page."
+        )
+    log(f"Facebook Page loaded: title={page.title()!r}; URL={page.url!r}")
+    return page_url
 
 
 def publish_to_facebook():
@@ -392,12 +399,10 @@ def publish_to_facebook():
 
         try:
             # ── Step 1: Switch to Page Profile & Confirm Wall Access ──────────────────
-            # The Page profile route can resolve to a public visitor view with no
-            # publishing controls. Business Suite opens the selected Page asset.
-            business_suite_url = open_business_suite(page, page_id)
+            page_url = open_facebook_page(page, page_id)
             handle_popups(page)
 
-            page.screenshot(path="fb_step1_business_suite.png", full_page=True)
+            page.screenshot(path="fb_step1_page_wall.png", full_page=True)
 
             # ── Step 2: Click "Photo/video" button ────────────────────────────────────
             log("Step 2: Opening the Page Reel/video composer...")
@@ -514,7 +519,7 @@ def publish_to_facebook():
             # ── Step 7: Verification ──────────────────────────────────────────────────
             log("Navigating to Page profile wall for final publication verification...")
             try:
-                page.goto(business_suite_url, wait_until="domcontentloaded", timeout=60000)
+                page.goto(page_url, wait_until="domcontentloaded", timeout=60000)
                 page.wait_for_timeout(8000)
                 page.screenshot(path="fb_final_published_verification.png")
                 log("Verification screenshot saved: fb_final_published_verification.png")
@@ -561,8 +566,8 @@ if __name__ == "__main__":
                 )
                 page = context.new_page()
                 try:
-                    log("Preflight: validating Facebook login and Page Reel publishing access...")
-                    open_business_suite(page, page_id)
+                    log("Preflight: validating Facebook login and Page publishing access...")
+                    open_facebook_page(page, page_id)
                     open_video_composer(page)
                     ensure_video_upload_control(page)
                     log("Preflight passed. Video generation may start.")
