@@ -114,11 +114,13 @@ def publish_social_posts(title: str, summary: str, labels: list[str], post_url: 
     publish_youtube_short(main3, video_path, short_title, summary, caption)
     print("Publishing article short to Facebook Reels...", flush=True)
     try:
-        from facebook_main import upload_facebook_reel
+        from fb_playwright_poster import publish_to_facebook
     except ImportError as exc:
         raise RuntimeError("Facebook Reel publishing dependencies are unavailable.") from exc
     reel_description = f"{caption}\n\n#Reels"[:5000]
-    upload_facebook_reel(video_path, title, reel_description)
+    os.environ["VIDEO_PATH"] = str(video_path)
+    os.environ["CAPTION_TEXT"] = f"{title[:255]}\n\n{reel_description}"
+    publish_to_facebook()
     main3.cleanup()
     print("Publishing article link to Facebook Page...", flush=True)
     publish_facebook_page_post(caption)
