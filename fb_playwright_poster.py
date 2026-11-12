@@ -7,6 +7,14 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 
 DEFAULT_FB_PAGE_ID = "61584777925866"
 
+
+def get_fb_session_json():
+    """Load Facebook storage state from a file or the GitHub Actions secret."""
+    session_path = os.getenv("FB_COOKIES_FILE")
+    if session_path:
+        return Path(session_path).read_text(encoding="utf-8")
+    return os.getenv("FB_COOKIES_JSON")
+
 def log(*args):
     print("[FB-PLAYWRIGHT]", *args)
     sys.stdout.flush()
@@ -174,11 +182,13 @@ def open_video_composer(page) -> None:
         ("Create post", re.compile(r"create\s+(a\s+)?post|what'?s on your mind", re.I)),
     ):
         try:
+            log(f"Looking for the '{label}' button...")
             button = page.get_by_role("button", name=pattern).first
             if button.is_visible(timeout=2500):
-                log(f"Opening Page composer via '{label}'...")
+                log(f"Found '{label}'. Clicking it to open the Page composer...")
                 button.click(timeout=10000)
                 page.wait_for_timeout(2500)
+                log(f"Clicked '{label}'; composer had time to open.")
                 if label == "Create reel":
                     return
                 break
@@ -186,16 +196,18 @@ def open_video_composer(page) -> None:
             continue
 
     selectors = [
-        page.get_by_role("button", name=re.compile(r"photo.?video|add video|video|create reel", re.I)).first,
-        page.locator('[aria-label*="Photo/video" i], [aria-label*="Create reel" i], [aria-label*="Add video" i]').first,
-        page.get_by_text(re.compile(r"photo.?video|add video|create reel", re.I)).first,
+        ("Photo/video or video button", page.get_by_role("button", name=re.compile(r"photo.?video|add video|video|create reel", re.I)).first),
+        ("Photo/video or Create reel control", page.locator('[aria-label*="Photo/video" i], [aria-label*="Create reel" i], [aria-label*="Add video" i]').first),
+        ("Photo/video or Create reel text", page.get_by_text(re.compile(r"photo.?video|add video|create reel", re.I)).first),
     ]
-    for candidate in selectors:
+    for label, candidate in selectors:
         try:
+            log(f"Trying fallback control: {label}...")
             if candidate.is_visible(timeout=2500):
-                log("Opening video attachment/Reel composer...")
+                log(f"Found {label}. Clicking to open the video composer...")
                 candidate.click(timeout=10000)
                 page.wait_for_timeout(2500)
+                log(f"Clicked {label}; composer had time to open.")
                 return
         except Exception:
             continue
@@ -217,17 +229,22 @@ def open_video_composer(page) -> None:
 
 def ensure_video_upload_control(page):
     """Verify the Reel composer exposes a file input before rendering starts."""
+    log("Checking whether the Reel composer has a video upload control...")
     file_inputs = page.locator('input[type="file"]')
     if file_inputs.count() == 0:
+        log("No file input yet. Looking for an Add video/Upload video/Add media button...")
         for label in ("Add video", "Upload video", "Add media"):
             try:
                 button = page.get_by_role("button", name=re.compile(label, re.I)).first
                 if button.is_visible(timeout=2000):
-                    log(f"Opening upload control via '{label}'...")
+                    log(f"Found '{label}'. Clicking it to reveal the upload control...")
                     button.click(timeout=10000)
+                    log(f"Clicked '{label}'.")
                     break
             except Exception:
                 continue
+    else:
+        log(f"Upload control is already present ({file_inputs.count()} file input(s)); no button click needed.")
     try:
         page.wait_for_selector('input[type="file"]', state="attached", timeout=15000)
     except PlaywrightTimeoutError as exc:
@@ -344,7 +361,7 @@ def open_facebook_page(page, page_id: str) -> str:
 
 
 def publish_to_facebook():
-    cookies_json = os.getenv("FB_COOKIES_JSON")
+    cookies_json = get_fb_session_json()
     page_id = os.getenv("FB_PAGE_ID") or DEFAULT_FB_PAGE_ID
 
     headless_env = os.getenv("HEADLESS", "false").lower()
@@ -556,7 +573,7 @@ if __name__ == "__main__":
     if "--preflight" in sys.argv:
         # Use the same session, Page selection, and composer navigation as the
         # publish flow, but stop before attaching a video or publishing anything.
-        cookies_json = os.getenv("FB_COOKIES_JSON")
+        cookies_json = get_fb_session_json()
         page_id = os.getenv("FB_PAGE_ID") or DEFAULT_FB_PAGE_ID
         if not cookies_json:
             raise RuntimeError("FB_COOKIES_JSON environment secret is missing")
@@ -580,7 +597,9 @@ if __name__ == "__main__":
                 try:
                     log("Preflight: validating Facebook login and Page publishing access...")
                     open_facebook_page(page, page_id)
+                    log("Preflight step 2: opening the Reel/video composer and reporting the button used...")
                     open_video_composer(page)
+                    log("Preflight step 3: checking the video upload control...")
                     ensure_video_upload_control(page)
                     log("Preflight passed. Video generation may start.")
                 finally:
