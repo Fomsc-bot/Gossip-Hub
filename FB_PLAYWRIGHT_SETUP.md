@@ -1,6 +1,6 @@
 # Automated Facebook Page Publishing (No Graph API)
 
-This solution automates posting to your Facebook Page (`https://www.facebook.com/profile.php?id=100081981528810`) directly from **GitHub Actions** using **Playwright headless browser automation**, bypassing the Facebook Graph API entirely.
+This solution automates posting to your Facebook Page (`https://www.facebook.com/profile.php?id=61584777925866`) directly from **GitHub Actions** using **Playwright headless browser automation**, bypassing the Facebook Graph API entirely.
 
 ---
 

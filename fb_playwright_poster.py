@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
-DEFAULT_FB_PAGE_ID = "100081981528810"
+DEFAULT_FB_PAGE_ID = "61584777925866"
 
 
 def get_fb_session_json():
