@@ -326,10 +326,12 @@ def switch_to_gossip_hub_profile(page, page_id: str):
 
 
 def open_facebook_page(page, page_id: str) -> str:
-    """Log in with saved state, switch to the Page profile, and open its wall."""
-    page_url = f"https://www.facebook.com/profile.php?id={page_id}"
+    """Log in, switch to the Page identity, then open the feed without switching back."""
     switch_to_gossip_hub_profile(page, page_id)
-    log(f"Opening Facebook Page wall: {page_url}")
+    # page_id is the personal profile used to reach the identity switcher.
+    # Reopening it after switching changes Facebook back to that personal profile.
+    page_url = "https://www.facebook.com/"
+    log(f"Opening Facebook feed as the selected Page identity: {page_url}")
     page.goto(page_url, wait_until="domcontentloaded", timeout=60000)
     page.wait_for_timeout(7000)
     current_url = page.url.lower()
