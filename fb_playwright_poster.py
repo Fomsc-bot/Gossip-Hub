@@ -280,6 +280,23 @@ def switch_to_gossip_hub_profile(page, page_id: str):
     page.screenshot(path="fb_step0_switched_confirm.png")
 
 
+def open_business_suite(page, page_id: str) -> str:
+    """Open Business Suite with the target Page selected as the publishing asset."""
+    suite_url = f"https://business.facebook.com/latest/home?asset_id={page_id}"
+    log(f"Step 0: Opening Meta Business Suite for Page {page_id}: {suite_url}")
+    page.goto(suite_url, wait_until="domcontentloaded", timeout=60000)
+    page.wait_for_timeout(10000)
+    current_url = page.url.lower()
+    page.screenshot(path="fb_step0_business_suite.png", full_page=True)
+    if "login" in current_url or "checkpoint" in current_url or "two_factor" in current_url:
+        raise RuntimeError(
+            "Facebook session expired or Meta Business Suite requires a security check. "
+            "Re-export FB_COOKIES_JSON from an account with Page publishing access."
+        )
+    log(f"Business Suite loaded: title={page.title()!r}; URL={page.url!r}")
+    return suite_url
+
+
 def publish_to_facebook():
     cookies_json = os.getenv("FB_COOKIES_JSON")
     page_id = os.getenv("FB_PAGE_ID") or DEFAULT_FB_PAGE_ID
@@ -348,16 +365,12 @@ def publish_to_facebook():
 
         try:
             # ── Step 1: Switch to Page Profile & Confirm Wall Access ──────────────────
-            switch_to_gossip_hub_profile(page, page_id)
-
-            page_profile_url = f"https://www.facebook.com/profile.php?id={page_id}"
-            log(f"Step 1: Navigating to Page wall: {page_profile_url}")
-            page.goto(page_profile_url, wait_until="domcontentloaded", timeout=60000)
-            page.wait_for_timeout(5000)
+            # The Page profile route can resolve to a public visitor view with no
+            # publishing controls. Business Suite opens the selected Page asset.
+            business_suite_url = open_business_suite(page, page_id)
             handle_popups(page)
 
-            log(f"Page Title: {page.title()}")
-            page.screenshot(path="fb_step1_page_wall.png")
+            page.screenshot(path="fb_step1_business_suite.png", full_page=True)
 
             # ── Step 2: Click "Photo/video" button ────────────────────────────────────
             log("Step 2: Opening the Page Reel/video composer...")
@@ -473,7 +486,7 @@ def publish_to_facebook():
             # ── Step 7: Verification ──────────────────────────────────────────────────
             log("Navigating to Page profile wall for final publication verification...")
             try:
-                page.goto(page_profile_url, wait_until="domcontentloaded", timeout=60000)
+                page.goto(business_suite_url, wait_until="domcontentloaded", timeout=60000)
                 page.wait_for_timeout(8000)
                 page.screenshot(path="fb_final_published_verification.png")
                 log("Verification screenshot saved: fb_final_published_verification.png")
