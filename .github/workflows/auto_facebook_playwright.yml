@@ -82,7 +82,7 @@ jobs:
       - name: Run Facebook Playwright Publisher (Headed mode with Xvfb)
         env:
           FB_COOKIES_JSON: ${{ secrets.FB_COOKIES_JSON }}
-          FB_PAGE_ID: "61584777925866"
+          FB_PAGE_ID: "100081981528810"
           HEADLESS: "false"
         run: |
           if [ -f "work/caption.txt" ]; then

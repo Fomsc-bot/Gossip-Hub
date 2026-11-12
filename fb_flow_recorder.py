@@ -33,7 +33,7 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-DEFAULT_FB_PAGE_ID = "61584777925866"
+DEFAULT_FB_PAGE_ID = "100081981528810"
 PAGE_URL = f"https://www.facebook.com/profile.php?id={DEFAULT_FB_PAGE_ID}"
 
 
