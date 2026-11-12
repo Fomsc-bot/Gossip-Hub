@@ -74,6 +74,33 @@ def publish_facebook_page_post(caption: str) -> None:
     print(f"Facebook Page post published (post {payload.get('id', 'unknown')}).", flush=True)
 
 
+def publish_facebook_reel(video_path, title: str, caption: str) -> None:
+    """Upload the rendered short to the Facebook Page through the Graph API."""
+    page_id = os.getenv("FB_PAGE_ID")
+    access_token = os.getenv("FB_PAGE_ACCESS_TOKEN")
+    missing = [name for name, value in (("FB_PAGE_ID", page_id), ("FB_PAGE_ACCESS_TOKEN", access_token)) if not value]
+    if missing:
+        raise RuntimeError("Missing GitHub Actions secrets: " + ", ".join(missing))
+
+    api_version = os.getenv("FB_GRAPH_API_VERSION", "v21.0")
+    url = f"https://graph.facebook.com/{api_version}/{page_id}/videos"
+    with open(video_path, "rb") as video_file:
+        response = requests.post(
+            url,
+            data={"access_token": access_token, "title": title[:100], "description": caption[:5000]},
+            files={"source": ("blogger_article_short.mp4", video_file, "video/mp4")},
+            timeout=(30, 600),
+        )
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {}
+    if not response.ok or payload.get("error") or not payload.get("id"):
+        detail = payload.get("error", response.text[:500])
+        raise RuntimeError(f"Facebook Graph API video upload failed (HTTP {response.status_code}): {detail}")
+    print(f"Facebook Reel uploaded through Graph API (video {payload['id']}).", flush=True)
+
+
 def render_article_short(title: str, summary: str, image_url: str):
     """Render a short using the selected Blogger story rather than fetching another story."""
     try:
@@ -113,14 +140,8 @@ def publish_social_posts(title: str, summary: str, labels: list[str], post_url: 
     print("Publishing article short to YouTube...", flush=True)
     publish_youtube_short(main3, video_path, short_title, summary, caption)
     print("Publishing article short to Facebook Reels...", flush=True)
-    try:
-        from fb_playwright_poster import publish_to_facebook
-    except ImportError as exc:
-        raise RuntimeError("Facebook Reel publishing dependencies are unavailable.") from exc
     reel_description = f"{caption}\n\n#Reels"[:5000]
-    os.environ["VIDEO_PATH"] = str(video_path)
-    os.environ["CAPTION_TEXT"] = f"{title[:255]}\n\n{reel_description}"
-    publish_to_facebook()
+    publish_facebook_reel(video_path, title, reel_description)
     main3.cleanup()
     print("Publishing article link to Facebook Page...", flush=True)
     publish_facebook_page_post(caption)
