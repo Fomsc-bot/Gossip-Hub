@@ -37,7 +37,7 @@ jobs:
       - name: Verify Facebook login and Reel upload screen
         env:
           FB_COOKIES_JSON: ${{ secrets.FB_COOKIES_JSON }}
-          FB_PAGE_ID: '61584777925866'
+          FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
           HEADLESS: 'false'
         # GitHub's hosted runner has no visible desktop. Xvfb provides a small
         # headed display; Playwright records it so the run can be reviewed below.
@@ -48,7 +48,7 @@ jobs:
           NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
           GNEWS_API_KEY: ${{ secrets.GNEWS_API_KEY }}
           FB_COOKIES_JSON: ${{ secrets.FB_COOKIES_JSON }}
-          FB_PAGE_ID: '61584777925866'
+          FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
           HEADLESS: 'false'
         run: xvfb-run -a python facebook_main.py
 
