@@ -215,6 +215,33 @@ def open_video_composer(page) -> None:
     )
 
 
+def ensure_video_upload_control(page):
+    """Verify the Reel composer exposes a file input before rendering starts."""
+    file_inputs = page.locator('input[type="file"]')
+    if file_inputs.count() == 0:
+        for label in ("Add video", "Upload video", "Add media"):
+            try:
+                button = page.get_by_role("button", name=re.compile(label, re.I)).first
+                if button.is_visible(timeout=2000):
+                    log(f"Opening upload control via '{label}'...")
+                    button.click(timeout=10000)
+                    break
+            except Exception:
+                continue
+    try:
+        page.wait_for_selector('input[type="file"]', state="attached", timeout=15000)
+    except PlaywrightTimeoutError as exc:
+        page.screenshot(path="fb_upload_control_missing.png", full_page=True)
+        raise RuntimeError(
+            "Business Suite Reel composer opened, but its video file input was not found. "
+            "See fb_upload_control_missing.png."
+        ) from exc
+
+    count = file_inputs.count()
+    log(f"Reel composer verified: {count} file input(s) are attached and ready for video.")
+    page.screenshot(path="fb_preflight_reel_composer_ready.png", full_page=True)
+
+
 def switch_to_gossip_hub_profile(page, page_id: str):
     """
     Navigates to the Gossip Hub page URL and switches profile if needed.
@@ -375,6 +402,7 @@ def publish_to_facebook():
             # ── Step 2: Click "Photo/video" button ────────────────────────────────────
             log("Step 2: Opening the Page Reel/video composer...")
             open_video_composer(page)
+            ensure_video_upload_control(page)
             page.screenshot(path="fb_step3_photo_video_modal.png")
 
             # ── Step 3: Attach Video File to Modal Input ──────────────────────────────
@@ -508,4 +536,39 @@ def publish_to_facebook():
                 temp_session_file.unlink()
 
 if __name__ == "__main__":
-    publish_to_facebook()
+    if "--preflight" in sys.argv:
+        # Use the same session, Page selection, and composer navigation as the
+        # publish flow, but stop before attaching a video or publishing anything.
+        cookies_json = os.getenv("FB_COOKIES_JSON")
+        page_id = os.getenv("FB_PAGE_ID") or DEFAULT_FB_PAGE_ID
+        if not cookies_json:
+            raise RuntimeError("FB_COOKIES_JSON environment secret is missing")
+
+        session_file = Path("temp_fb_preflight_session.json")
+        session_file.write_text(cookies_json, encoding="utf-8")
+        video_recording_dir = Path("video_recording")
+        video_recording_dir.mkdir(exist_ok=True)
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(
+                    headless=os.getenv("HEADLESS", "false").lower() == "true",
+                    args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+                )
+                context = browser.new_context(
+                    storage_state=str(session_file),
+                    viewport={"width": 1100, "height": 700},
+                    record_video_dir=str(video_recording_dir),
+                )
+                page = context.new_page()
+                try:
+                    log("Preflight: validating Facebook login and Page Reel publishing access...")
+                    open_business_suite(page, page_id)
+                    open_video_composer(page)
+                    ensure_video_upload_control(page)
+                    log("Preflight passed. Video generation may start.")
+                finally:
+                    browser.close()
+        finally:
+            session_file.unlink(missing_ok=True)
+    else:
+        publish_to_facebook()
