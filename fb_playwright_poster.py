@@ -526,6 +526,17 @@ def publish_to_facebook():
             log("Post/Publish/Share button successfully clicked!")
             page.screenshot(path="fb_step8_published_click.png")
 
+            log("Waiting 10 seconds for the final audience dialog...")
+            page.wait_for_timeout(10000)
+            done_button = page.get_by_role("button", name="Done", exact=True)
+            try:
+                done_button.wait_for(state="visible", timeout=15000)
+                log("Clicking the final 'Done' button...")
+                done_button.click()
+                log("Final 'Done' button clicked.")
+            except Exception as e:
+                raise RuntimeError("Facebook's final 'Done' button did not appear or could not be clicked.") from e
+
             # ── Step 6: Wait for Background Video Upload & Server Encoding ────────────
             log("Step 6: Waiting for Facebook post submission & video upload completion...")
             handle_popups(page)
