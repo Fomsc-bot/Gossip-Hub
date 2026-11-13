@@ -528,24 +528,39 @@ def publish_to_facebook():
                 raise RuntimeError("Could not find or click an active 'Post', 'Publish', 'Share', or 'Next' button.")
 
             log("Post/Publish/Share button successfully clicked!")
-            log("Waiting for Facebook's post-submission dialog to finish loading...")
-            # Facebook first shows a loading/skeleton overlay after Publish is
-            # clicked, then replaces it with a confirmation dialog containing
-            # Done. Wait for that actionable confirmation instead of relying on
-            # a fixed sleep and capturing the intermediate loading state.
+            log("Waiting for Facebook to complete the post submission...")
+            # Depending on the composer variant, Facebook either closes the
+            # composer after submission or shows a confirmation with a Done
+            # button. A Done button is not guaranteed, so watch for either
+            # completion signal instead of failing on that single UI detail.
             done_button = page.get_by_role("button", name="Done", exact=True)
+            composer_dialog = page.locator('div[role="dialog"]').first
+            submission_complete = False
+            deadline = time.time() + 10
             try:
-                done_button.wait_for(state="visible", timeout=60000)
-                done_button.wait_for(state="attached", timeout=5000)
-                page.screenshot(path="fb_step8_published_click.png")
-                log("Clicking the final 'Done' button...")
-                done_button.click(timeout=15000)
-                log("Final 'Done' button clicked.")
+                while time.time() < deadline:
+                    if done_button.is_visible():
+                        page.screenshot(path="fb_step8_published_click.png")
+                        log("Facebook showed a submission confirmation. Clicking 'Done'...")
+                        done_button.click(timeout=15000)
+                        submission_complete = True
+                        break
+                    if composer_dialog.count() == 0 or not composer_dialog.is_visible():
+                        page.screenshot(path="fb_step8_published_click.png")
+                        log("Facebook closed the composer after submission.")
+                        submission_complete = True
+                        break
+                    page.wait_for_timeout(1000)
             except Exception as e:
                 page.screenshot(path="fb_step8_publish_confirmation_error.png")
+                raise RuntimeError("Facebook's post submission confirmation could not be handled.") from e
+
+            if not submission_complete:
+                page.screenshot(path="fb_step8_publish_confirmation_error.png")
                 raise RuntimeError(
-                    "Facebook did not finish loading the post confirmation dialog or its Done button could not be clicked."
-                ) from e
+                    "Facebook kept the publish dialog open for 10 seconds without showing confirmation. "
+                    "Check fb_step8_publish_confirmation_error.png to see whether the upload is still processing or Facebook reported an error."
+                )
 
             # ── Step 6: Wait for Background Video Upload & Server Encoding ────────────
             log("Step 6: Waiting for Facebook post submission & video upload completion...")
@@ -556,8 +571,13 @@ def publish_to_facebook():
                 page.locator('div[role="dialog"]').wait_for(state="detached", timeout=90000)
                 log("Creation dialog detached! Post submitted to Facebook.")
             except Exception:
-                log("Dialog detach wait timed out — holding browser open for background chunk upload...")
-                page.wait_for_timeout(40000)
+                # Submission was already confirmed above; a remaining dialog
+                # here indicates Facebook still has an unresolved composer.
+                page.screenshot(path="fb_upload_dialog_still_open.png")
+                raise RuntimeError(
+                    "Facebook confirmed the publish action, but the upload composer did not close. "
+                    "Check fb_upload_dialog_still_open.png before retrying to avoid publishing a duplicate."
+                )
 
             try:
                 page.wait_for_load_state("networkidle", timeout=30000)
