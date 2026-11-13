@@ -1,118 +1,87 @@
 # Gossip Hub
 
-An automated, end-to-end video production and publishing pipeline that curates trending entertainment news, generates AI-driven scripts, formats dynamic video content with automated voiceovers and captions, and publishes directly to YouTube and Facebook via scheduled GitHub Actions.
+Gossip Hub automates entertainment-news content creation. It gathers a story, prepares a script and voice-over, renders a video, and publishes it through the configured platform workflow.
 
----
+[![Test workflow status](https://github.com/Fomsc-bot/Gossip-Hub/actions/workflows/test1.yml/badge.svg)](https://github.com/Fomsc-bot/Gossip-Hub/actions/workflows/test1.yml)
 
-## Architecture & Workflow
+The badge shows the latest status for the **Test** workflow (`test1.yml`). Click it to open that workflow's runs. GitHub's badge editor may also offer optional branch or event filters; this README uses no extra filters.
 
-Gossip Hub operates as an autonomous content creation pipeline. The automated workflow follows four main stages:
+## GitHub Actions workflows
 
-```
-[News APIs / Web Scraping] ➔ [Script Generation (Gemini AI / Rules)] ➔ [TTS & Video Composition (MoviePy & PIL)] ➔ [Automated Upload (YouTube & FB Graph APIs)]
-```
+These are the workflows documented here:
 
-1. **Content Ingestion & De-duplication**
-   - Fetches real-time entertainment headlines using **NewsAPI** and **GNews**.
-   - Scrapes article leads (`og:description` or fallback meta tags) for detailed context.
-   - Logs processed headlines in `work/last_titles.txt` to prevent duplicate video generation.
+| Workflow | Purpose | Runs |
+|---|---|---|
+| [Test (`test1.yml`)](https://github.com/Fomsc-bot/Gossip-Hub/actions/workflows/test1.yml) | Runs `main3.py` to create and upload a YouTube Short. | Scheduled and manual (`workflow_dispatch`) |
+| [Facebook Reels (`facebook_reels.yml`)](https://github.com/Fomsc-bot/Gossip-Hub/actions/workflows/facebook_reels.yml) | Renders a short and publishes it to the Facebook Page using Playwright. | Scheduled and manual |
+| [Blogger (`publish_blogger.yml`)](https://github.com/Fomsc-bot/Gossip-Hub/actions/workflows/publish_blogger.yml) | Publishes a Blogger article and then shares related content to connected social platforms. | Scheduled and manual |
+| [Long-form video (`run_long.yml`)](https://github.com/Fomsc-bot/Gossip-Hub/actions/workflows/run_long.yml) | Runs `main_long.py` to create and upload a long-form YouTube video. | Scheduled and manual |
 
-2. **AI Scripting & Voice Synthesis**
-   - Summarizes and formats news articles into engaging voiceover scripts via **Google Gemini API** (with fallback structured templates).
-   - Generates natural-sounding speech files for each line using **gTTS** (Google Text-to-Speech).
+To run one manually, open its workflow page, choose **Run workflow**, select the branch, and start the run. Automated schedules use UTC in the workflow files.
 
-3. **Dynamic Video Rendering**
-   - Pulls high-resolution background imagery matching the news topic (via article images or fallback stock assets).
-   - Applies visual effects including smooth zoom animations (`vfx.resize`) and vertical/horizontal cropping.
-   - Renders semi-transparent caption overlays with custom typography using **Pillow**.
-   - Combines background visuals, speech audio, caption overlays, and outro clips into final MP4 files using **MoviePy**.
+## How content is made
 
-4. **Multi-Platform Automated Publishing**
-   - **YouTube Data API v3**: Uploads vertical YouTube Shorts (1080x1920) or landscape long-form videos (1920x1080) complete with titles, descriptions, and hashtags.
-   - **Facebook Graph API**: Publishes short-form reels directly to a targeted Facebook Page.
+The Python pipeline uses NewsAPI and/or GNews to find entertainment stories, generates narration, creates voice-over audio, and renders video assets. The Facebook Reels workflow uses Playwright to operate the Facebook Reel composer. The other publishing integrations use the platform APIs configured for each workflow.
 
----
+The main entry points are:
 
-## File Structure & Entry Points
+- `main3.py` — YouTube Shorts pipeline used by `test1.yml`.
+- `facebook_main.py` and `fb_playwright_poster.py` — Facebook Reel rendering and browser publishing.
+- `blogger_publisher.py` — Blogger article and related social publishing.
+- `main_long.py` — long-form YouTube video pipeline.
 
-- `main.py` — Pipeline for generating and uploading **YouTube Shorts** (vertical 1080x1920 format with outro clip support).
-- `main2.py` — Pipeline dedicated to **Facebook Reels** integration using the Facebook Graph API.
-- `main3.py` — Enhanced YouTube Shorts generator with image validation and multi-attempt news fetching.
-- `main_long.py` — **Long-Form YouTube Video** generator (landscape 1920x1080 format) powered by Gemini AI script synthesis.
-- `Outtro/` — Stores promotional outro video snippets appended to generated videos.
-- `.github/workflows/` — Automated execution scripts for GitHub Actions:
-  - `run.yml` — Runs YouTube Shorts automation on a scheduled cron trigger.
-  - `run_long.yml` — Schedules daily long-form video generation.
-  - `auto_gossip_shorts.yml` — Schedules Facebook Reels publishing.
+Generated and intermediate files are stored under `work/` and are excluded from Git.
 
----
+## Configure GitHub Actions secrets
 
-## Tech Stack
+Add credentials under **Repository → Settings → Secrets and variables → Actions**. Never commit API keys, OAuth tokens, Facebook cookies, or client-secret files.
 
-- **Language**: Python 3.11
-- **Video & Audio Processing**: `moviepy`, `gTTS`, `Pillow` (PIL), `mutagen`
-- **AI & Data APIs**: `google-generativeai` (Gemini API), NewsAPI, GNews, Pexels API
-- **Publishing & Authentication**: `google-api-python-client`, `google-auth-oauthlib`, Facebook Graph API
-- **Automation**: GitHub Actions (Cron triggers & workflow dispatch)
+| Secret | Used by | Purpose |
+|---|---|---|
+| `NEWS_API_KEY` | All four workflows | NewsAPI access. |
+| `GNEWS_API_KEY` | Facebook Reels, Blogger, Long-form | GNews access/fallback. |
+| `YT_CLIENT_ID`, `YT_CLIENT_SECRET`, `YT_REFRESH_TOKEN` | Test, Blogger, Long-form | YouTube OAuth credentials. |
+| `FB_COOKIES_JSON` | Facebook Reels | Playwright Facebook session storage state. |
+| `FB_PAGE_ID` | Blogger | Facebook Page target for Blogger's social sharing. |
+| `FB_PAGE_ACCESS_TOKEN` | Blogger | Facebook Graph API Page publishing. |
+| `BLOGGER_CLIENT_ID`, `BLOGGER_CLIENT_SECRET`, `BLOGGER_REFRESH_TOKEN` | Blogger | Blogger OAuth credentials. |
+| `BLOGGER_BLOG_ID` | Blogger | Numeric Blogger blog ID. |
+| `GROQ_API_KEY` | Blogger | Article drafting. |
+| `GEMINI_API_KEY` | Long-form | Gemini-powered scripting. |
+| `PEXELS_API_KEY` | Long-form | Optional/fallback visual assets. |
+| `MUSIC_URL` | Long-form | Optional music asset URL. |
 
----
+The Facebook Reels workflow also sets `FB_PAGE_ID` directly in its YAML, so it does not require that secret for its current target. It does require `FB_COOKIES_JSON`.
 
-## Setup & Local Execution
+## Run locally
 
-### Prerequisites
-
-1. Python 3.10+ installed.
-2. FFmpeg installed on your system (required by MoviePy for video encoding).
-
-### Installation
-
-Clone the repository and install dependencies:
+Use Python 3.11, install FFmpeg, and install the Python requirements:
 
 ```bash
 git clone https://github.com/Fomsc-bot/Gossip-Hub.git
 cd Gossip-Hub
+python -m venv .venv
+```
+
+Activate the virtual environment, then run:
+
+```bash
+python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-### Environment Variables
+Set the environment variables needed by the selected pipeline before running it. For Facebook browser publishing, install Playwright and Chromium as well:
 
-Configure the following environment variables (or add them as GitHub Repository Secrets for automated runs):
-
-| Variable | Description |
-|---|---|
-| `NEWS_API_KEY` | API Key from NewsAPI.org |
-| `GNEWS_API_KEY` | API Key from GNews.io |
-| `GEMINI_API_KEY` | Google Gemini API key for script synthesis |
-| `YT_CLIENT_ID` | Google OAuth2 Client ID for YouTube Uploads |
-| `YT_CLIENT_SECRET` | Google OAuth2 Client Secret |
-| `YT_REFRESH_TOKEN` | OAuth2 Refresh Token with YouTube upload scope |
-| `FB_PAGE_ID` | Facebook Page ID (for `main2.py`) |
-| `FB_PAGE_ACCESS_TOKEN` | Facebook Page Access Token (for `main2.py`) |
-| `PEXELS_API_KEY` | (Optional) Pexels API Key for fallback background visuals |
-
-### Running Locally
-
-To generate and upload a YouTube Short:
 ```bash
-python main.py
+pip install playwright
+playwright install chromium
 ```
 
-To generate a Facebook Reel:
-```bash
-python main2.py
-```
+The workflow's browser preflight checks Facebook login and Page publishing access before it renders and uploads a Reel.
 
-To generate a Long-Form YouTube Video:
-```bash
-python main_long.py
-```
+## Troubleshooting
 
-Generated assets, intermediate audio files, background images, and tracking logs will be stored in the `work/` directory during execution.
-
----
-
-## CI/CD & Automated Scheduling
-
-The project leverages GitHub Actions to run fully headless content generation workflows. Workflows trigger automatically on specified cron schedules or can be executed manually via `workflow_dispatch`.
-
-Secrets are passed securely to the runner environment, enabling zero-maintenance scheduled publishing.
+- **Workflow fails because a credential is missing:** check the workflow's secrets table above and confirm the secret name matches exactly.
+- **Facebook asks for login or cannot open the Reel composer:** refresh `FB_COOKIES_JSON` using an account that can publish to the Page, then rerun the Facebook Reels workflow.
+- **Check screenshots from a Facebook run:** open the run's `facebook-reel-browser-debug` artifact. It contains browser screenshots and, when available, the recorded browser video.
+- **A workflow badge is red:** click the badge or workflow link to inspect the failing run's logs.
