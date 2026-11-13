@@ -83,46 +83,35 @@ def click_action_button(page, button_texts: list, label: str, timeout: int = 400
     log(f"Waiting for '{label}' button with options {button_texts} (timeout={timeout}ms)...")
     start_time = time.time()
     
-    selectors = []
-    for text in button_texts:
-        selectors.extend([
-            f'div[role="dialog"] div[aria-label="{text}"][role="button"]',
-            f'div[role="dialog"] div[role="button"]:has-text("{text}")',
-            f'div[role="dialog"] button:has-text("{text}")',
-            f'div[aria-label="{text}"][role="button"]',
-            f'div[role="button"]:has-text("{text}")',
-            f'button:has-text("{text}")',
-            f'[aria-label="{text}"]'
-        ])
-    
-    selector_str = ", ".join(selectors)
-
     while (time.time() - start_time) * 1000 < timeout:
         try:
-            btns = page.locator(selector_str)
-            count = btns.count()
-            for i in range(count):
-                btn = btns.nth(i)
-                if btn.is_visible():
+            # Use Playwright's exact accessible-name match first. The old
+            # :has-text selectors also matched larger controls such as
+            # "Add to feed post", which can make the click appear successful
+            # while leaving the actual blue Post button untouched.
+            for text in button_texts:
+                exact_buttons = page.get_by_role("button", name=text, exact=True)
+                for i in range(exact_buttons.count()):
+                    btn = exact_buttons.nth(i)
+                    if not btn.is_visible():
+                        continue
                     aria_disabled = btn.get_attribute("aria-disabled")
                     disabled = btn.get_attribute("disabled")
-                    # Facebook commonly renders its controls as div[role=button].
-                    # Check the computed DOM state too, since those controls can
-                    # expose disabled state through CSS/classes instead of an attribute.
                     is_enabled = btn.is_enabled()
                     if aria_disabled == "true" or disabled is not None or not is_enabled:
-                        log(f"'{label}' found at index {i} but disabled (aria-disabled={aria_disabled}). Waiting for video upload/processing...")
+                        log(f"'{text}' button found but disabled (aria-disabled={aria_disabled}). Waiting for processing...")
                         continue
-                    log(f"'{label}' found at index {i} and is active. Clicking...")
+                    log(f"Exact '{text}' button found and active. Clicking...")
                     try:
                         btn.scroll_into_view_if_needed(timeout=2000)
                     except Exception:
                         pass
                     try:
-                        btn.click(force=True, timeout=5000)
+                        btn.click(timeout=7000)
                     except Exception:
+                        # Use DOM click only on the exact-name matched button.
                         btn.evaluate("el => el.click()")
-                    log(f"'{label}' clicked successfully!")
+                    log(f"Exact '{text}' button click dispatched.")
                     return True
         except Exception as e:
             log(f"Retry loop in click_action_button ({label}): {e}")
