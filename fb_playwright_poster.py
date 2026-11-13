@@ -106,7 +106,11 @@ def click_action_button(page, button_texts: list, label: str, timeout: int = 400
                 if btn.is_visible():
                     aria_disabled = btn.get_attribute("aria-disabled")
                     disabled = btn.get_attribute("disabled")
-                    if aria_disabled == "true" or disabled is not None:
+                    # Facebook commonly renders its controls as div[role=button].
+                    # Check the computed DOM state too, since those controls can
+                    # expose disabled state through CSS/classes instead of an attribute.
+                    is_enabled = btn.is_enabled()
+                    if aria_disabled == "true" or disabled is not None or not is_enabled:
                         log(f"'{label}' found at index {i} but disabled (aria-disabled={aria_disabled}). Waiting for video upload/processing...")
                         continue
                     log(f"'{label}' found at index {i} and is active. Clicking...")
@@ -524,18 +528,24 @@ def publish_to_facebook():
                 raise RuntimeError("Could not find or click an active 'Post', 'Publish', 'Share', or 'Next' button.")
 
             log("Post/Publish/Share button successfully clicked!")
-            page.screenshot(path="fb_step8_published_click.png")
-
-            log("Waiting 10 seconds for the final audience dialog...")
-            page.wait_for_timeout(10000)
+            log("Waiting for Facebook's post-submission dialog to finish loading...")
+            # Facebook first shows a loading/skeleton overlay after Publish is
+            # clicked, then replaces it with a confirmation dialog containing
+            # Done. Wait for that actionable confirmation instead of relying on
+            # a fixed sleep and capturing the intermediate loading state.
             done_button = page.get_by_role("button", name="Done", exact=True)
             try:
-                done_button.wait_for(state="visible", timeout=15000)
+                done_button.wait_for(state="visible", timeout=60000)
+                done_button.wait_for(state="attached", timeout=5000)
+                page.screenshot(path="fb_step8_published_click.png")
                 log("Clicking the final 'Done' button...")
-                done_button.click()
+                done_button.click(timeout=15000)
                 log("Final 'Done' button clicked.")
             except Exception as e:
-                raise RuntimeError("Facebook's final 'Done' button did not appear or could not be clicked.") from e
+                page.screenshot(path="fb_step8_publish_confirmation_error.png")
+                raise RuntimeError(
+                    "Facebook did not finish loading the post confirmation dialog or its Done button could not be clicked."
+                ) from e
 
             # ── Step 6: Wait for Background Video Upload & Server Encoding ────────────
             log("Step 6: Waiting for Facebook post submission & video upload completion...")
