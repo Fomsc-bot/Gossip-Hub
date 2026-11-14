@@ -334,6 +334,16 @@ def open_facebook_page(page, page_id: str) -> str:
             "Facebook session expired or requires a security check. "
             "Re-export FB_COOKIES_JSON using an account with Page publishing access."
         )
+    body_text = page.locator("body").inner_text(timeout=10000).lower()
+    if "use another profile" in body_text and "remove profiles from this browser" in body_text:
+        page.screenshot(path="fb_profile_chooser.png", full_page=True)
+        raise RuntimeError(
+            "Facebook displayed its saved-profile chooser instead of the logged-in feed. "
+            "The workflow cannot safely choose between the listed accounts. Log in to the "
+            "correct Facebook account locally, export a fresh storage state with "
+            "export_fb_cookies.py, update the FB_COOKIES_JSON repository secret, and rerun. "
+            "See fb_profile_chooser.png."
+        )
     email_field = page.locator(
         'input[name="email"], input[autocomplete="username"], '
         'input[placeholder*="Email or phone" i]'
@@ -346,7 +356,6 @@ def open_facebook_page(page, page_id: str) -> str:
             "Re-export the current logged-in browser state with export_fb_cookies.py, "
             "replace the repository secret, and rerun preflight. See fb_login_required.png."
         )
-    body_text = page.locator("body").inner_text(timeout=10000).lower()
     if "this content isn't available" in body_text or "content isn't available" in body_text:
         raise RuntimeError(
             "Facebook reports this Page is unavailable to the saved account. "

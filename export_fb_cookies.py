@@ -1,7 +1,6 @@
-import sys
-import time
 from pathlib import Path
 from playwright.sync_api import sync_playwright
+
 
 def export_cookies():
     session_file = Path("fb_session.json")
@@ -9,28 +8,35 @@ def export_cookies():
     print("Facebook Cookie Exporter for GitHub Actions Automation")
     print("=" * 60)
     print("Launching Chromium browser...")
-    print("Please log into your Facebook account in the opened window.")
-    print("You will have 60 seconds to complete login.")
+    print("Log into the Facebook account that can publish to the Page.")
     print("=" * 60)
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False)
         context = browser.new_context()
         page = context.new_page()
-        page.goto("https://www.facebook.com")
-
-        # Wait for user to log in manually
-        print("Waiting for login... (Press Enter in terminal when logged in, or wait 60s)")
         try:
-            # Wait up to 60 seconds or until user presses enter
-            page.wait_for_timeout(60000)
-        except KeyboardInterrupt:
-            pass
+            page.goto("https://www.facebook.com")
+            input("After Facebook shows the logged-in feed, press Enter here to export the session...")
+            body_text = page.locator("body").inner_text(timeout=10000).lower()
+            if "use another profile" in body_text and "remove profiles from this browser" in body_text:
+                raise RuntimeError(
+                    "Facebook is still showing its saved-profile chooser. Select and log into "
+                    "the correct account in the browser, then run this exporter again."
+                )
+            login_form = page.locator(
+                'input[name="email"], input[autocomplete="username"], '
+                'input[placeholder*="Email or phone" i]'
+            ).first
+            if login_form.is_visible():
+                raise RuntimeError(
+                    "Facebook still shows its login form. Log in before exporting the session."
+                )
 
-        # Save cookies and local storage state
-        context.storage_state(path=session_file)
-        print(f"\n[SUCCESS] Session saved to {session_file.resolve()}")
-        browser.close()
+            context.storage_state(path=session_file)
+            print(f"\n[SUCCESS] Session saved to {session_file.resolve()}")
+        finally:
+            browser.close()
 
     if session_file.exists():
         content = session_file.read_text(encoding="utf-8")

@@ -82,6 +82,6 @@ The workflow's browser preflight checks Facebook login and Page publishing acces
 ## Troubleshooting
 
 - **Workflow fails because a credential is missing:** check the workflow's secrets table above and confirm the secret name matches exactly.
-- **Facebook asks for login or cannot open the Reel composer:** refresh `FB_COOKIES_JSON` using an account that can publish to the Page, then rerun the Facebook Reels workflow.
+- **Facebook shows “Use another profile” or cannot open the Reel composer:** the saved session is not reaching the logged-in feed. Export a fresh `FB_COOKIES_JSON` while logged into the correct account (see [Facebook setup](FB_PLAYWRIGHT_SETUP.md)), update the repository secret, and rerun the preflight. The workflow will save `fb_profile_chooser.png` when it detects the saved-profile chooser.
 - **Check screenshots from a Facebook run:** open the run's `facebook-reel-browser-debug` artifact. It contains browser screenshots and, when available, the recorded browser video.
 - **A workflow badge is red:** click the badge or workflow link to inspect the failing run's logs.

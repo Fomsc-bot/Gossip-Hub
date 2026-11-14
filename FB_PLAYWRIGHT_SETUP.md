@@ -18,8 +18,9 @@ To allow GitHub Actions to post without hitting 2FA / CAPTCHA security prompts, 
    ```bash
    python export_fb_cookies.py
    ```
-3. A Chrome window will open. Log into your Facebook account (if not already logged in).
-4. After logging in, return to your terminal. The script will save `fb_session.json` and print out the raw JSON text.
+3. A Chrome window will open. Log into the Facebook account that can publish to the Page.
+4. Wait until the logged-in Facebook feed is visible, then return to your terminal and press Enter. The script will refuse to export if Facebook is still showing its login form or saved-profile chooser.
+5. Replace the `FB_COOKIES_JSON` secret with the complete contents of the newly generated `fb_session.json`.
 
 ---
 
