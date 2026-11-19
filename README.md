@@ -46,6 +46,12 @@ Add credentials under **Repository → Settings → Secrets and variables → Ac
 | `FB_PAGE_ACCESS_TOKEN` | Blogger | Facebook Graph API Page publishing. |
 | `BLOGGER_CLIENT_ID`, `BLOGGER_CLIENT_SECRET`, `BLOGGER_REFRESH_TOKEN` | Blogger | Blogger OAuth credentials. |
 | `BLOGGER_BLOG_ID` | Blogger | Numeric Blogger blog ID. |
+
+If the Blogger workflow reports `invalid_grant` while refreshing authorization, the saved
+`BLOGGER_REFRESH_TOKEN` has expired or been revoked, or it belongs to a different OAuth
+client. Re-authorize the Blogger account with the Blogger API scope and update the
+`BLOGGER_REFRESH_TOKEN` repository Actions secret; make sure the client ID and secret
+come from the same OAuth client used to issue that token.
 | `GROQ_API_KEY` | Blogger | Article drafting. |
 | `GEMINI_API_KEY` | Long-form | Gemini-powered scripting. |
 | `PEXELS_API_KEY` | Long-form | Optional/fallback visual assets. |

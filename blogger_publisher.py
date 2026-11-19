@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 
 import requests
 from google.auth.transport.requests import Request
+from google.auth.exceptions import RefreshError
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
@@ -420,7 +421,18 @@ def blogger_service():
         client_secret=os.environ["BLOGGER_CLIENT_SECRET"],
         scopes=[BLOGGER_SCOPE],
     )
-    credentials.refresh(Request())
+    try:
+        credentials.refresh(Request())
+    except RefreshError as exc:
+        message = str(exc).lower()
+        if "invalid_grant" in message or "expired or revoked" in message:
+            raise RuntimeError(
+                "Blogger OAuth refresh failed: BLOGGER_REFRESH_TOKEN has expired, was revoked, "
+                "or does not match the configured OAuth client. Re-authorize the Blogger account "
+                "with the Blogger API scope, then replace the BLOGGER_REFRESH_TOKEN repository "
+                "Actions secret (and verify BLOGGER_CLIENT_ID/SECRET belong to that same OAuth client)."
+            ) from exc
+        raise RuntimeError(f"Blogger OAuth refresh failed: {exc}") from exc
     print("Blogger authorization ready.", flush=True)
     return build("blogger", "v3", credentials=credentials, cache_discovery=False), blog_id
 
